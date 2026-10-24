@@ -1,5 +1,7 @@
 # AURA — Airport Retail Media
 
+**Live playground: [aura-airport-retail-media.onrender.com](https://aura-airport-retail-media.onrender.com)** — no login, switch roles in the header. It runs on a free instance, so the first request after a quiet spell takes about a minute to wake it.
+
 Ads and promotions on airport screens, chosen for the passengers actually standing in front of them.
 
 Flight data says who is where and for how long. A delayed Dubai flight at Gate 42 means 240 international passengers with 45 extra minutes near duty-free, and the perfume shop should get that slot — not the toy shop, and not whoever booked it a fortnight ago. This repository is a working platform that does that, with every decision traceable back to the feed that justified it.
@@ -89,14 +91,16 @@ npm run build && npm start      # everything on :4000
 
 ### Deploying it
 
-`render.yaml` is a Render Blueprint: in the Render dashboard, **New → Blueprint**,
-pick this repo, and it builds the Dockerfile and runs the one container.
+The live playground above runs from this repository. `render.yaml` is a Render
+Blueprint: in the Render dashboard, **New → Blueprint**, pick the repo, and it
+installs, builds and starts the one service. Pushing to `main` redeploys it.
 
 There is nothing else to provision. The day is generated from a fixed seed at
 boot, so the service needs no database add-on and no persistent disk — if the
 filesystem resets, the next boot rebuilds the same airport, down to the Gate 42
 worked example. The same property makes the app portable to Fly, Railway, Cloud
-Run or a plain VM: one image, one port, no external state.
+Run or a plain VM: one port, no external state. The Dockerfile is equivalent if
+you would rather deploy the image.
 
 Two things to know before demoing from a free instance. It spins down after
 15 minutes without traffic and takes about a minute to wake, so open the URL a
