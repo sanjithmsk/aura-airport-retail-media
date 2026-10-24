@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Type-check the workspace
+        run: npm run build
+
+      # Pins the brief's worked example: the Gate 42 crowd profile and the
+      # three candidate scores. If the generator or the scoring model moves
+      # any of them, the demo stops being reproducible and this fails.
+      - name: Domain tests
+        run: npm run test:domain
+
+      - name: Seed a day
+        run: npm -w @aura/api run db:reset
+
+      # Boots the API on its own seeded database and walks the endpoints a
+      # demo actually uses, including the AIDX injection and the claim flow.
+      - name: API integration test
+        run: npm run test:api
+
+      # The challenge criteria, as executable checks.
+      - name: Criteria audit
+        run: npm run audit
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t aura-airport-retail-media:ci .
+      - name: Start it and wait for health
+        run: |
+          docker run -d --name aura -p 4000:4000 aura-airport-retail-media:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:4000/api/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "did not become healthy"; docker logs aura; exit 1
+      - name: Check the worked example through the container
+        run: |
+          curl -fsS -X POST localhost:4000/api/sim/jump \
+            -H 'content-type: application/json' -d '{"ts":1792851000000}' >/dev/null
+          curl -fsS localhost:4000/api/screens/SCR-061/decision \
+            | node -e "
+              let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>{
+                const d=JSON.parse(s);
+                const ok = d.dwellMedian===52 && d.winner.campaignId==='CMP-201' && d.winner.final===0.86;
+                console.log(ok ? 'worked example reproduces in the container' : JSON.stringify(d.winner));
+                process.exit(ok?0:1);
+              });"
+      - if: always()
+        run: docker rm -f aura || true

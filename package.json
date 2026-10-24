@@ -1,0 +1,36 @@
+{
+  "name": "aura-airport-retail-media",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Airport retail media platform — ads on airport screens, timed to the passengers actually in front of them.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "npm install && npm -w @aura/core run build && npm -w @aura/api run db:reset",
+    "db:reset": "npm -w @aura/core run build && npm -w @aura/api run db:reset",
+    "dev": "npm -w @aura/core run build && concurrently -n api,web -c cyan,magenta \"npm -w @aura/api run dev\" \"npm -w @aura/web run dev\"",
+    "build": "npm -w @aura/core run build && npm -w @aura/api run build && npm -w @aura/web run build",
+    "start": "npm run build && npm -w @aura/api run start",
+    "test": "npm -w @aura/core run test && npm -w @aura/api run build && npm -w @aura/api run test",
+    "lint": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
+    "test:domain": "npm -w @aura/core run test",
+    "test:api": "npm -w @aura/api run test",
+    "audit": "npm run build --silent && node scripts/criteria-audit.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "8.2.2",
+    "drizzle-kit": "0.31.6",
+    "drizzle-orm": "0.45.4",
+    "typescript": "5.6.3",
+    "vitest": "2.1.9"
+  },
+  "overrides": {
+    "vite": "5.4.21"
+  }
+}

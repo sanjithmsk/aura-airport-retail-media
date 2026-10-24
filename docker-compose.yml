@@ -1,0 +1,36 @@
+# One command brings up the whole platform on http://localhost:4000
+#
+#   docker compose up
+#
+# No cloud services, no API keys, no seeded secrets. The database is an
+# embedded SQLite file on a named volume; migrations and the seed run on boot.
+services:
+  aura:
+    build: .
+    image: aura-airport-retail-media:1.0.0
+    container_name: aura
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: file:/data/aura.db
+      PORT: "4000"
+      HOST: 0.0.0.0
+      NODE_ENV: production
+      # Switching to a live feed is one value per source — see docs/adapters.md
+      FLIGHT_SOURCE: mock-aidx
+      ZONE_SOURCE: mock-acris
+      AODB_SOURCE: mock-file
+      # The creative assistant runs offline by default, so no key is needed
+      AI_PROVIDER: mock
+    volumes:
+      - aura-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  aura-data:

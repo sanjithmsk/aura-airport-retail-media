@@ -1,0 +1,2934 @@
+openapi: 3.1.0
+
+info:
+  title: AURA — Airport Retail Media API
+  version: 1.0.0
+  summary: Ads on airport screens, chosen from the passengers actually in front of them.
+  description: >
+    AURA turns airport operational feeds into advertising decisions. An AODB snapshot, an
+    IATA AIDX event stream and ACI ACRIS queue measurements are normalised into one canonical
+    model, aggregated into a per-zone presence signal and a per-screen crowd profile, and then
+    used to pick which campaign plays on which screen in the next slot. Every decision carries
+    the evidence it was built from and the result of a deterministic verifier that re-checks
+    that evidence before anything reaches a screen.
+
+
+    All state in this API belongs to one deterministic simulated day (2026-10-24 at Aurelia
+    International, IATA `AUR`), driven by a clock the client can play, pause, speed up and jump.
+    Timestamps are integer milliseconds since the Unix epoch, on the simulation clock, not the
+    wall clock. Money is in the currency reported by `GET /api/config`.
+
+
+    No endpoint in this API accepts or returns data about an individual passenger. Audience
+    information exists only as aggregated shares over a flight, a zone and a time window; see
+    the `CrowdProfile` schema.
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: http://localhost:4000
+    description: Local development and the demo container.
+
+tags:
+  - name: Meta
+    description: Liveness and the white-label configuration the client boots from.
+  - name: Simulation
+    description: The clock that drives the whole day, and the disruptions you can inject into it.
+  - name: Flights
+    description: The canonical flight picture and the gate topology behind it.
+  - name: Presence
+    description: Zones and the derived passenger-presence signal every decision rests on.
+  - name: Screens & Decisions
+    description: The screen estate, what each screen is playing, and why.
+  - name: Commerce
+    description: Campaigns, creatives, promotional codes and the claim flow behind the QR.
+  - name: Metrics
+    description: Network, outlet and campaign performance, plus the redemption and goodwill ledgers.
+  - name: Operations
+    description: Incidents raised by the platform and the vendors who service the estate.
+  - name: Inventory
+    description: Slot availability, floor-price yield and the seven-day occupancy forecast.
+  - name: Feeds
+    description: Health and raw payloads of the three external standards behind the canonical model.
+  - name: Events
+    description: One server-sent event stream carrying everything that changes.
+
+paths:
+
+  # ---- Meta -----------------------------------------------------------------
+
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [Meta]
+      summary: Liveness probe
+      description: >
+        Confirms the API is up and tells you which simulated day it is serving and where the
+        clock currently sits. Use it as a container health check and as the first call when you
+        are unsure whether a stale client is pointed at a restarted server.
+      responses:
+        '200':
+          description: The server is up.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                ok: true
+                day: '2026-10-24'
+                now: 1792851000000
+
+  /api/config:
+    get:
+      operationId: getConfig
+      tags: [Meta]
+      summary: White-label theme, engine constants and reference data
+      description: >
+        Everything a client needs before it renders a single view: the brand and currency it
+        should wear, the engine constants that explain the numbers it is about to show, which
+        adapter is behind each feed, and the segment, category, airline and destination
+        catalogues it needs to label things. Fetch it once at boot and cache it.
+      responses:
+        '200':
+          description: The running configuration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppConfig' }
+
+  # ---- Simulation -----------------------------------------------------------
+
+  /api/sim:
+    get:
+      operationId: getSimState
+      tags: [Simulation]
+      summary: Read the transport state
+      description: >
+        Returns where the clock is, whether it is running and how fast. A client that has just
+        connected uses this to place its scrubber; after that the same object arrives on the
+        event stream as `transport`, so polling is unnecessary.
+      responses:
+        '200':
+          description: Current transport state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimState' }
+              example:
+                now: 1792851000000
+                playing: true
+                speed: 10
+                dayStart: 1792816200000
+                dayEnd: 1792886340000
+                sceneTime: 1792851000000
+
+  /api/sim/play:
+    post:
+      operationId: simPlay
+      tags: [Simulation]
+      summary: Start the clock
+      description: >
+        Resumes the simulated day. Flights begin changing state again, ACRIS sweeps resume and
+        decisions are recomputed every tick. Broadcasts `transport` to every stream listener so
+        all open clients agree on the clock.
+      responses:
+        '200':
+          description: Transport state after resuming.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimState' }
+
+  /api/sim/pause:
+    post:
+      operationId: simPause
+      tags: [Simulation]
+      summary: Stop the clock
+      description: >
+        Freezes the simulated day so a reviewer can read a decision at leisure without the
+        world moving underneath them. Decisions keep being served from cache; nothing advances.
+      responses:
+        '200':
+          description: Transport state after pausing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimState' }
+
+  /api/sim/speed:
+    post:
+      operationId: simSetSpeed
+      tags: [Simulation]
+      summary: Set the clock multiplier
+      description: >
+        Sets how many simulated milliseconds pass per real millisecond. The UI offers 1, 10 and
+        60; 60 walks the whole operating day in about twenty minutes, which is how you see a
+        delay build a crowd and then release it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [speed]
+              properties:
+                speed:
+                  type: number
+                  description: Clock multiplier. Non-numeric or zero values fall back to 1.
+                  examples: [60]
+      responses:
+        '200':
+          description: Transport state after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimState' }
+
+  /api/sim/jump:
+    post:
+      operationId: simJumpTo
+      tags: [Simulation]
+      summary: Jump the clock to a timestamp
+      description: >
+        Moves the clock to a given moment, clamped to the simulated day, then replays the flight
+        state machine, republishes ACRIS measurements and rebuilds every cached decision. This
+        is how you land directly on the worked example at 14:10 without waiting for it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ts]
+              properties:
+                ts:
+                  type: integer
+                  format: int64
+                  description: Target time in epoch milliseconds, clamped to `dayStart`..`dayEnd`.
+                  examples: [1792851000000]
+      responses:
+        '200':
+          description: Transport state after the jump.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimState' }
+
+  /api/sim/inject/delay:
+    post:
+      operationId: injectDelay
+      tags: [Simulation]
+      summary: Delay a flight
+      description: >
+        Pushes a departure later by a number of minutes and lets the consequences propagate:
+        ETD, boarding, gate close and the A-CDM milestones all move, an AIDX delay message is
+        emitted, and because scheduled boarding does not move, the crowd stays at the gate
+        instead of dispersing. Use it to demonstrate a delay trigger firing on a live screen.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flightId]
+              properties:
+                flightId:
+                  type: string
+                  description: Flight leg identifier, airline code plus number.
+                  examples: ['XY501']
+                minutes:
+                  type: integer
+                  description: Minutes to add to the existing delay. Defaults to 30.
+                  default: 30
+                  examples: [45]
+      responses:
+        '200':
+          description: The AIDX event the delay produced, canonical form plus the raw XML.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FlightEvent' }
+        '404':
+          description: No flight with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'flight not found' }
+
+  /api/sim/inject/gate:
+    post:
+      operationId: injectGateChange
+      tags: [Simulation]
+      summary: Move a flight to another gate
+      description: >
+        Reassigns a departure to a different gate, moving its stand, terminal and zone with it
+        and marking the destination zone as having had a gate change, which is what a
+        `gateChange` campaign trigger watches for. Emits an AIDX resource message carrying both
+        the new and the previous gate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flightId, gate]
+              properties:
+                flightId:
+                  type: string
+                  examples: ['XY501']
+                gate:
+                  type: string
+                  description: Target gate identifier, as returned by `GET /api/gates`.
+                  examples: ['44']
+      responses:
+        '200':
+          description: The AIDX event the reassignment produced.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FlightEvent' }
+        '404':
+          description: The flight or the target gate does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'flight or gate not found' }
+
+  /api/sim/inject/screen:
+    post:
+      operationId: injectScreenOffline
+      tags: [Simulation]
+      summary: Toggle a screen between offline and online
+      description: >
+        Flips one screen's health. Taking a screen offline drops its cached decision, releases
+        its inventory and, after five minutes without a heartbeat, raises a critical incident;
+        calling it again restores the screen. Use it to show the estate degrading and recovering
+        without touching hardware.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [screenId]
+              properties:
+                screenId:
+                  type: string
+                  examples: ['SCR-061']
+      responses:
+        '200':
+          description: The screen in its new state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Screen' }
+        '404':
+          description: No screen with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'screen not found' }
+
+  /api/sim/reset:
+    post:
+      operationId: resetSimulation
+      tags: [Simulation]
+      summary: Back to the opening state
+      description: >
+        Rebuilds the seeded day from the database and clears every injected event, live counter
+        and cached decision, then parks the clock at 14:05 paused. Injections are destructive by
+        design, so this is how a reviewer gets back to the worked example after experimenting.
+      responses:
+        '200':
+          description: The transport state after the reset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimState' }
+
+  # ---- Flights --------------------------------------------------------------
+
+  /api/flights:
+    get:
+      operationId: listFlights
+      tags: [Flights]
+      summary: List flight legs
+      description: >
+        The flight board behind everything else. Filter it to the subset a view actually needs —
+        one airline's departures, one gate's traffic, or a time slice — rather than loading the
+        whole day, which is roughly nine hundred legs.
+      parameters:
+        - name: direction
+          in: query
+          description: '`D` for departures, `A` for arrivals. Only departures build presence.'
+          schema: { type: string, enum: [D, A] }
+          example: D
+        - name: airline
+          in: query
+          description: Two-letter IATA airline code.
+          schema: { type: string }
+          example: XY
+        - name: gate
+          in: query
+          description: Gate identifier.
+          schema: { type: string }
+          example: '42'
+        - name: from
+          in: query
+          description: Earliest estimated departure, epoch milliseconds inclusive.
+          schema: { type: integer, format: int64 }
+          example: 1792851000000
+        - name: to
+          in: query
+          description: Latest estimated departure, epoch milliseconds inclusive.
+          schema: { type: integer, format: int64 }
+          example: 1792858200000
+        - name: limit
+          in: query
+          description: Maximum legs returned. Defaults to 200.
+          schema: { type: integer, default: 200 }
+          example: 50
+      responses:
+        '200':
+          description: Matching flight legs in schedule order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Flight' }
+
+  /api/flights/{id}:
+    get:
+      operationId: getFlight
+      tags: [Flights]
+      summary: One flight leg
+      description: >
+        The full canonical record for a single leg, including its A-CDM milestones and its
+        aggregated crowd profile. This is the record a decision cites in its evidence trail, so
+        it is the right place to check a claim the decision made about the crowd.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Flight leg identifier.
+          schema: { type: string }
+          example: XY501
+      responses:
+        '200':
+          description: The flight leg.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Flight' }
+        '404':
+          description: No flight with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/gates:
+    get:
+      operationId: listGates
+      tags: [Flights]
+      summary: Gate topology
+      description: >
+        Every gate with its zone, terminal, stand and floor-plan coordinates. Clients use it to
+        draw the terminal map and to offer a valid target when injecting a gate change.
+      responses:
+        '200':
+          description: All gates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Gate' }
+
+  # ---- Presence -------------------------------------------------------------
+
+  /api/zones:
+    get:
+      operationId: listZones
+      tags: [Presence]
+      summary: Terminal zones
+      description: >
+        The thirteen zones the airport is divided into, with their kind and their rectangle on
+        the stylised floor plan. Zone kind is what decides how a zone is fed: piers draw on
+        their own gates, while halls, security and check-in draw on the whole terminal, damped
+        and shifted earlier in time.
+      responses:
+        '200':
+          description: All zones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Zone' }
+
+  /api/zones/{id}/presence:
+    get:
+      operationId: getZonePresence
+      tags: [Presence]
+      summary: Derived presence for a zone
+      description: >
+        The signal the whole product rests on: how many people are in a zone now, how many will
+        be there in thirty minutes, how long they are likely to stay, and what the aggregated
+        crowd looks like. It is modelled from departures at the gates feeding the zone and then
+        corrected by the most recent ACRIS queue measurement if that reading is fresh. The
+        `sources` array names every input that contributed.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Zone identifier.
+          schema: { type: string }
+          example: T2-PC
+        - name: at
+          in: query
+          description: >
+            Evaluate presence at this moment instead of now, in epoch milliseconds. Useful for
+            plotting the curve across the day without moving the clock.
+          schema: { type: integer, format: int64 }
+          example: 1792851000000
+      responses:
+        '200':
+          description: Presence for the requested window.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZonePresence' }
+        '404':
+          description: No zone with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  # ---- Screens & Decisions --------------------------------------------------
+
+  /api/screens:
+    post:
+      operationId: createScreen
+      tags: [Operations]
+      summary: Onboard a screen
+      description: >
+        Adds a screen to the network. It starts online and enters the decision rotation on the
+        next slot, so inventory for it is sellable immediately.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Screen' } } }
+      responses:
+        '200': { description: The created screen., content: { application/json: { schema: { $ref: '#/components/schemas/Screen' } } } }
+    get:
+      operationId: listScreens
+      tags: [Screens & Decisions]
+      summary: List screens
+      description: >
+        The screen estate with health, latency, floor price and the gates each screen faces.
+        Narrow it to a zone when drawing one pier or one hall, since the whole estate is about
+        a hundred and eighty screens.
+      parameters:
+        - name: zone
+          in: query
+          description: Return only screens in this zone.
+          schema: { type: string }
+          example: T2-PC
+      responses:
+        '200':
+          description: Matching screens.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Screen' }
+
+  /api/screens/{id}:
+    get:
+      operationId: getScreen
+      tags: [Screens & Decisions]
+      summary: One screen
+      description: >
+        A single screen's record, including the gates in its catchment, which is what determines
+        whose crowd it is allowed to be sold against.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: SCR-061
+      responses:
+        '200':
+          description: The screen.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Screen' }
+              example:
+                id: SCR-061
+                zone: T2-PC
+                terminal: T2
+                name: Gate 42 totem
+                size: 55"
+                orientation: portrait
+                ratio: '9:16'
+                kind: Gate totem
+                nearGates: ['40', '41', '42', '43', '44']
+                x: 486
+                y: 442
+                status: online
+                latencyMs: 62
+                offlineSince: null
+                installed: '2025-04-14'
+                vendor: Lumen Displays
+                floorPrice: 11
+                lastPlay: 1792850985000
+                playsToday: 184
+                impressionsToday: 21460
+        '404':
+          description: No screen with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/screens/{id}/decision:
+    get:
+      operationId: getScreenDecision
+      tags: [Screens & Decisions]
+      summary: What this screen is playing, and why
+      description: >
+        Returns the current decision for one screen: the crowd it was computed from, every
+        campaign that was filtered out and the reason, every campaign that was scored and the
+        arithmetic, the winner, the verifier's checks and the evidence each claim rests on.
+        Calling it also marks the screen as watched, so it receives a full recomputation every
+        tick rather than only when the rotating sample reaches it. A decision younger than one
+        slot is served from cache so repeated polling is free.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: SCR-061
+      responses:
+        '200':
+          description: The decision in force for this screen.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Decision' }
+        '404':
+          description: No screen with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/decisions:
+    get:
+      operationId: listDecisions
+      tags: [Screens & Decisions]
+      summary: Recent decisions across the estate
+      description: >
+        A rolling log of the last three hundred decisions the engine made, newest first. It is
+        the audit view: search it by screen name, advertiser, zone or the rule that fired to
+        find out why a particular ad appeared where it did.
+      parameters:
+        - name: q
+          in: query
+          description: >
+            Case-insensitive substring matched against screen name, winning advertiser, the rule
+            that fired and the zone.
+          schema: { type: string }
+          example: Lumière
+        - name: limit
+          in: query
+          description: Maximum decisions returned. Defaults to 60.
+          schema: { type: integer, default: 60 }
+          example: 25
+      responses:
+        '200':
+          description: Matching decisions, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Decision' }
+
+  # ---- Commerce -------------------------------------------------------------
+
+  /api/outlets:
+    post:
+      operationId: createOutlet
+      tags: [Operations]
+      summary: Onboard an outlet
+      description: Adds a shop or F&B tenant to the master data. Unspecified fields take sensible defaults.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Outlet' } } }
+      responses:
+        '200': { description: The created outlet., content: { application/json: { schema: { $ref: '#/components/schemas/Outlet' } } } }
+    get:
+      operationId: listOutlets
+      tags: [Commerce]
+      summary: Retail outlets
+      description: >
+        The forty tenants who advertise on the network, with their zone, unit, trading hours and
+        the gates they sit near. A campaign is attached to an outlet so redemption revenue can be
+        attributed back to the shop that earned it.
+      responses:
+        '200':
+          description: All outlets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Outlet' }
+
+  /api/campaigns:
+    get:
+      operationId: listCampaigns
+      tags: [Commerce]
+      summary: List campaigns
+      description: >
+        Every campaign in the book with its targeting weights, hard placement rules, triggers,
+        budget, pacing and approval state. This is the full input side of the scoring engine, so
+        reading it alongside a decision explains that decision completely.
+      responses:
+        '200':
+          description: All campaigns.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Campaign' }
+    post:
+      operationId: createCampaign
+      tags: [Commerce]
+      summary: Create a campaign
+      description: >
+        Adds a campaign to the book. Whatever you send, it is stored with no spend and as
+        pending for both status and approval, so a new campaign cannot reach a screen until a
+        creative has been approved for it. Every cached decision is rebuilt immediately so the
+        new campaign appears in candidate lists on the next slot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Campaign' }
+            example:
+              id: CMP-230
+              name: 15% off travel-size fragrance
+              advertiser: Lumière Parfums
+              outletId: OUT-001
+              category: perfume
+              weights: { international: 0.5, holiday: 0.7, age2554: 0.53 }
+              hard: { internationalOnly: true, minCrowd: 100, minDwell: 15, zones: [T2-DF, T2-PC] }
+              triggers:
+                - { type: delay, overMin: 30, boost: 1.5, label: Flight delayed > 30 min }
+              budget: 18000
+              spent: 0
+              cpm: 9.4
+              cvrIndex: 1
+              creative: null
+              promo: null
+              priority: 1
+              schedule: { from: '06:00', to: '23:00' }
+              status: pending
+              approval: pending
+              brandSafety: passed
+              frequencyCap: 4
+              pinned: false
+      responses:
+        '200':
+          description: The stored campaign, forced to pending with zero spend.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+
+  /api/campaigns/{id}:
+    patch:
+      operationId: updateCampaign
+      tags: [Commerce]
+      summary: Amend a campaign
+      description: >
+        Applies a partial update — pause it, re-weight it, raise the budget, pin it to a screen —
+        and then throws away every cached decision and rebuilds, so the change is visible on
+        screens within one slot rather than at the next natural refresh.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: CMP-201
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Campaign' }
+            example: { status: paused, budget: 24000 }
+      responses:
+        '200':
+          description: The campaign after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '404':
+          description: No campaign with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/creatives:
+    get:
+      operationId: listCreatives
+      tags: [Commerce]
+      summary: List creatives
+      description: >
+        Every creative with its localised copy, template, aspect ratio, approval state and the
+        brand-safety checklist. A campaign cannot win a slot unless an approved creative exists
+        for it; the verifier enforces that on every decision.
+      responses:
+        '200':
+          description: All creatives.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Creative' }
+
+  /api/creatives/generate:
+    post:
+      operationId: generateCreative
+      tags: [Commerce]
+      summary: Draft a creative from a brief
+      description: >
+        Turns a one-line brief into a localised draft creative through the configured provider,
+        which is an offline deterministic template engine by default so the product runs with no
+        API key. The draft is saved as pending and is not eligible to play until approved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [brief]
+              properties:
+                brief:
+                  type: string
+                  description: Plain-language description of the offer. A percentage in the text becomes the headline discount.
+                  examples: ['15% off signature fragrances, airside only']
+                advertiser:
+                  type: string
+                  description: Defaults to `Unassigned`.
+                  examples: ['Lumière Parfums']
+                category:
+                  type: string
+                  description: Outlet category. Defaults to `dutyfree`, and may be overridden by keywords in the brief.
+                  examples: [perfume]
+                campaignId:
+                  type: [string, 'null']
+                  description: Campaign to attach the creative to. Null leaves it unattached.
+                  examples: ['CMP-201']
+      responses:
+        '200':
+          description: The generated creative, pending approval.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Creative' }
+
+  /api/creatives/{id}/duplicate:
+    post:
+      operationId: duplicateCreative
+      tags: [Commerce]
+      summary: Reuse an ad page
+      description: >
+        Copies an existing creative as a fresh, unapproved one with no campaign attached, so a
+        retailer can start from a page that already worked rather than from nothing.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, example: CRE-201 }
+      responses:
+        '200': { description: The new creative, pending approval., content: { application/json: { schema: { $ref: '#/components/schemas/Creative' } } } }
+        '404': { description: No creative with that identifier. }
+
+  /api/creatives/{id}/approve:
+    post:
+      operationId: approveCreative
+      tags: [Commerce]
+      summary: Approve a creative
+      description: >
+        Marks the creative approved and, if it belongs to a campaign, takes that campaign live.
+        Cached decisions are discarded and rebuilt, so the approval is the moment the campaign
+        becomes eligible to win a slot.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: CRE-201
+      responses:
+        '200':
+          description: The approved creative.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Creative' }
+        '404':
+          description: No creative with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/creatives/{id}/reject:
+    post:
+      operationId: rejectCreative
+      tags: [Commerce]
+      summary: Reject a creative
+      description: >
+        Marks the creative rejected and pauses its campaign, which removes it from every
+        candidate list on the next rebuild. Use it to demonstrate a compliance veto taking effect
+        across the estate within one slot.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: CRE-224
+      responses:
+        '200':
+          description: The rejected creative.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Creative' }
+        '404':
+          description: No creative with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/promos:
+    get:
+      operationId: listPromos
+      tags: [Commerce]
+      summary: List promotional codes
+      description: >
+        Every code behind a QR on a screen, with its offer, redemption ceiling, running count and
+        whether it has been paused for stock. Codes expire when the linked flight closes boarding
+        rather than at a fixed clock time.
+      responses:
+        '200':
+          description: All promotional codes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PromoCode' }
+
+  /api/promos/{code}:
+    get:
+      operationId: getPromo
+      tags: [Commerce]
+      summary: Resolve a scanned code
+      description: >
+        What the passenger's phone calls after scanning the QR on a screen. It returns the offer
+        together with the campaign and creative behind it, so the landing page can show the same
+        copy, in the same language, as the screen they were just looking at.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: The printed promotional code.
+          schema: { type: string }
+          example: AUR201-59
+      responses:
+        '200':
+          description: The offer with its campaign and creative.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromoDetail' }
+        '404':
+          description: No promotional code with that value.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/promos/{code}/claim:
+    post:
+      operationId: claimPromo
+      tags: [Commerce]
+      summary: Claim an offer
+      description: >
+        Records a scan and a redemption against the campaign, which is the only measured outcome
+        in the system and the signal that moves a campaign's learned conversion index — and so
+        its score on the very next decision. If the offer allows sharing, a second code is
+        returned for someone travelling with the claimant.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+          example: AUR201-59
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                via:
+                  type: string
+                  description: How the offer was claimed. Defaults to `qr`.
+                  examples: [qr]
+                screenId:
+                  type: [string, 'null']
+                  description: Screen the code was scanned from, so revenue can be attributed to a placement.
+                  examples: ['SCR-061']
+                segment:
+                  type: string
+                  description: Segment label to attribute the claim to. Defaults to `qr`.
+                  examples: [holiday]
+      responses:
+        '200':
+          description: The recorded redemption, plus a shareable code when sharing is enabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaimResult' }
+              example:
+                redemption:
+                  at: 1792851000000
+                  campaignId: CMP-201
+                  screenId: SCR-061
+                  advertiser: Lumière Parfums
+                  outletId: OUT-001
+                  value: 28.4
+                  segment: holiday
+                  code: AUR201-59
+                  via: qr
+                shareCode: AUR201-100
+        '404':
+          description: No promotional code with that value.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+        '409':
+          description: >
+            The offer cannot be claimed: either the outlet has paused it for stock, or the
+            redemption ceiling has been reached.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                stock:
+                  summary: Paused for stock
+                  value: { error: 'offer paused: out of stock' }
+                exhausted:
+                  summary: Ceiling reached
+                  value: { error: 'offer fully redeemed' }
+
+  # ---- Metrics --------------------------------------------------------------
+
+  /api/metrics/network:
+    get:
+      operationId: getNetworkMetrics
+      tags: [Metrics]
+      summary: Network-wide performance
+      description: >
+        The single call behind the operations dashboard: estate health and average latency, the
+        day's plays, impressions, scans, redemptions and revenue, how many campaigns still have
+        budget, and the platform's own latency and uptime figures.
+      responses:
+        '200':
+          description: Current network metrics.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NetworkMetrics' }
+
+  /api/metrics/outlet/{id}:
+    get:
+      operationId: getOutletMetrics
+      tags: [Metrics]
+      summary: Performance for one outlet
+      description: >
+        What the network delivered for a single tenant: impressions served, codes scanned, offers
+        redeemed and the till value behind them. This is the number a retail manager is asked
+        about at the end of the month.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: OUT-001
+      responses:
+        '200':
+          description: Outlet metrics.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OutletMetrics' }
+        '404':
+          description: No outlet with that identifier, or no counters for it yet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/metrics/campaign/{id}:
+    get:
+      operationId: getCampaignMetrics
+      tags: [Metrics]
+      summary: Live and historical performance for one campaign
+      description: >
+        Today's running counters next to thirty days of persisted daily rows, so an advertiser
+        can see whether today is tracking against the campaign's own history rather than against
+        an abstract benchmark.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: CMP-201
+      responses:
+        '200':
+          description: Live counters and daily history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignMetrics' }
+        '404':
+          description: No campaign with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/history:
+    get:
+      operationId: listHistory
+      tags: [Metrics]
+      summary: Daily campaign history
+      description: >
+        Thirty days of per-campaign daily rows across the whole book. It is what makes "run this
+        again next Saturday" a defensible suggestion rather than a guess, and what the ROI view
+        charts against.
+      parameters:
+        - name: advertiser
+          in: query
+          description: Restrict to one advertiser's rows.
+          schema: { type: string }
+          example: Lumière Parfums
+        - name: limit
+          in: query
+          description: Return at most this many rows, taken from the end of the series. Defaults to 400.
+          schema: { type: integer, default: 400 }
+          example: 90
+      responses:
+        '200':
+          description: Daily rows, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CampaignDay' }
+
+  /api/redemptions:
+    get:
+      operationId: listRedemptions
+      tags: [Metrics]
+      summary: Recent redemptions
+      description: >
+        The live redemption ledger, newest first and capped at two hundred entries. Each row ties
+        a till value back to the campaign, the screen and the segment that produced it, which is
+        the chain of custody for every revenue claim the product makes.
+      responses:
+        '200':
+          description: Recent redemptions, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Redemption' }
+
+  /api/goodwill:
+    get:
+      operationId: listGoodwill
+      tags: [Metrics]
+      summary: Delay goodwill offers
+      description: >
+        Vouchers the platform pushed automatically when a departure passed an hour late: which
+        flight, which retail partner absorbed it, how the cost was split and what it came to.
+        It is the one place where the presence signal is spent on the passenger rather than sold.
+      responses:
+        '200':
+          description: Goodwill offers, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GoodwillOffer' }
+
+  # ---- Operations -----------------------------------------------------------
+
+  /api/incidents:
+    get:
+      operationId: listIncidents
+      tags: [Operations]
+      summary: Open and recent incidents
+      description: >
+        Everything the platform has raised about itself, newest first and capped at sixty — a
+        screen that stopped answering, for example. Each carries the owner it was routed to, so
+        the list doubles as the field-tech queue.
+      responses:
+        '200':
+          description: Incidents, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Incident' }
+
+  /api/incidents/{id}:
+    patch:
+      operationId: updateIncidentStatus
+      tags: [Operations]
+      summary: Move an incident along
+      description: >
+        Sets an incident's status, for instance to acknowledged or resolved. Resolving an
+        incident also stops the health check from raising a duplicate for the same reference
+        while the underlying condition persists.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          example: INC-0101
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  description: New status, for example `open`, `acknowledged` or `resolved`.
+                  examples: [resolved]
+      responses:
+        '200':
+          description: The incident after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '404':
+          description: No incident with that identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'not found' }
+
+  /api/outlets/{id}:
+    patch:
+      operationId: updateOutlet
+      tags: [Operations]
+      summary: Edit an outlet
+      description: >
+        Master-data edit for a shop or F&B tenant. Changing its nearest gates changes which
+        departures its passenger-flow view is derived from.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, example: OUT-001 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Outlet' }
+      responses:
+        '200': { description: The updated outlet., content: { application/json: { schema: { $ref: '#/components/schemas/Outlet' } } } }
+        '404': { description: No outlet with that identifier. }
+
+  /api/screens/{id}:
+    patch:
+      operationId: updateScreen
+      tags: [Operations]
+      summary: Edit a screen
+      description: >
+        Master-data edit. Changing a screen's nearest gates changes its catchment, so the very
+        next decision it makes is computed against a different crowd; changing its orientation
+        re-derives the aspect ratio the creative is rendered in.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, example: SCR-061 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Screen' }
+      responses:
+        '200': { description: The updated screen., content: { application/json: { schema: { $ref: '#/components/schemas/Screen' } } } }
+        '404': { description: No screen with that identifier. }
+
+  /api/vendors:
+    get:
+      operationId: listVendors
+      tags: [Operations]
+      summary: Vendors and their SLAs
+      description: >
+        Who supplies the screens, the flight data and the passenger sensing, with the service
+        level each is held to and how many screens each one is responsible for. An incident is
+        only actionable if you know who owns the box.
+      responses:
+        '200':
+          description: All vendors.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Vendor' }
+
+  # ---- Inventory ------------------------------------------------------------
+
+  /api/inventory:
+    get:
+      operationId: getInventory
+      tags: [Inventory]
+      summary: Slot grid for a zone
+      description: >
+        A screen-by-hour grid for one zone showing which hourly slots are already booked, which
+        are premium because predicted footfall is high, and what each slot prices at once the
+        screen's floor price is scaled by that footfall. This is the view a media seller works
+        from.
+      parameters:
+        - name: zone
+          in: query
+          description: Zone to grid. Defaults to `T2-PC`. At most twenty-four screens are returned.
+          schema: { type: string, default: T2-PC }
+          example: T2-PC
+      responses:
+        '200':
+          description: The slot grid, hours 05:00 to 22:00.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryGrid' }
+
+  /api/yield:
+    get:
+      operationId: getYield
+      tags: [Inventory]
+      summary: Predicted footfall and a seven-day forecast
+      description: >
+        Hour-by-hour predicted presence for every zone, plus a seven-day occupancy and revenue
+        outlook with the weekend uplift applied. Together they are the basis for pricing next
+        week's inventory rather than last week's.
+      responses:
+        '200':
+          description: Per-zone hourly curves and the forward forecast.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/YieldForecast' }
+
+  # ---- Feeds ----------------------------------------------------------------
+
+  /api/feeds:
+    get:
+      operationId: getFeedHealth
+      tags: [Feeds]
+      summary: Health of the three source feeds
+      description: >
+        For each external standard behind the canonical model — AODB movements, IATA AIDX and
+        ACI ACRIS — which adapter is currently bound to it, how many messages it has produced,
+        when the last one arrived, the rate, the freshness budget beyond which the verifier
+        treats its inputs as stale, and the canonical entities it produces.
+      responses:
+        '200':
+          description: Health of all three feeds.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedsHealth' }
+
+  /api/feeds/aodb.csv:
+    get:
+      operationId: getAodbCsv
+      tags: [Feeds]
+      summary: AODB movements as CSV
+      description: >
+        The departures board exported in the thirty-three-column AODB movement format, header row
+        included. It exists so an integrator can see the exact shape the file adapter consumes
+        before pointing the platform at a real export.
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum rows. Defaults to 50.
+          schema: { type: integer, default: 50 }
+          example: 50
+      responses:
+        '200':
+          description: CSV with a header row.
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                FLIGHT_KEY,AIRLINE_IATA,AIRLINE_ICAO,FLIGHT_NUMBER,SUFFIX,MOVEMENT_TYPE,SERVICE_TYPE,SCHEDULED_DATE,STD_UTC,ETD_UTC,ATD_UTC,STA_UTC,ETA_UTC,ATA_UTC,TOBT,TSAT,AIBT,AOBT,ORIGIN_IATA,DESTINATION_IATA,VIA_IATA,TERMINAL,GATE,STAND,CHECKIN_DESKS,BAGGAGE_BELT,AIRCRAFT_TYPE_IATA,AIRCRAFT_REG,SEAT_CAPACITY,PAX_TOTAL,LOAD_FACTOR,FLIGHT_STATUS,DELAY_CODE_1
+                XY501/2026-10-24,XY,AUR,501,,D,J,2026-10-24,2026-10-24T14:40:00Z,2026-10-24T15:25:00Z,,,,,2026-10-24T15:05:00Z,2026-10-24T15:10:00Z,,,AUR,DXB,,T2,42,C42,24-31,,A333,QX-KMR,295,240,0.81,DELAYED,93
+
+  /api/feeds/aidx/recent:
+    get:
+      operationId: getRecentAidx
+      tags: [Feeds]
+      summary: Recent AIDX messages
+      description: >
+        The most recent flight events, newest first, each in canonical form with the original
+        `IATA_AIDX_FlightLegNotifRQ` XML attached. Use it to prove that an event a decision cited
+        really arrived on the wire, and in what form.
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum messages. Defaults to 10.
+          schema: { type: integer, default: 10 }
+          example: 10
+      responses:
+        '200':
+          description: Recent flight events, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FlightEvent' }
+
+  /api/feeds/acris/entities:
+    get:
+      operationId: getAcrisEntities
+      tags: [Feeds]
+      summary: ACRIS NGSI-LD entities
+      description: >
+        The terminals, zones and checkpoints the zone adapter exposes, as ACI ACRIS / FIWARE
+        Smart Data Model entities with their JSON-LD context. It shows an integrator exactly which
+        NGSI-LD shapes the platform reads before a broker is connected.
+      responses:
+        '200':
+          description: NGSI-LD entity documents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NgsiLdEntity' }
+
+  /api/feeds/acris/recent:
+    get:
+      operationId: getRecentAcrisMeasurements
+      tags: [Feeds]
+      summary: Recent ACRIS queue measurements
+      description: >
+        The last QueueMeasurement entities the zone adapter published, newest first. These are the
+        readings that correct the flight-derived presence estimate for the window they actually
+        measured, so this is where an operator looks when a zone's passenger count disagrees with
+        what they can see on the floor.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 12 }
+          example: 12
+      responses:
+        '200':
+          description: QueueMeasurement entities in NGSI-LD form, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NgsiLdEntity' }
+              example:
+                - id: urn:ngsi-ld:QueueMeasurement:AUR:T2-PC:1792851000000
+                  type: QueueMeasurement
+                  refZone: { type: Relationship, object: 'urn:ngsi-ld:Zone:AUR:T2-PC' }
+                  peopleCount: { type: Property, value: 2144, observedAt: '2026-10-24T14:10:00Z' }
+                  averageWaitingTime: { type: Property, value: 312, unitCode: SEC, observedAt: '2026-10-24T14:10:00Z' }
+                  occupancy: { type: Property, value: 1, observedAt: '2026-10-24T14:10:00Z' }
+
+  # ---- Events ---------------------------------------------------------------
+
+  /api/events:
+    get:
+      operationId: streamEvents
+      tags: [Events]
+      summary: Server-sent event stream
+      description: |
+        One long-lived `text/event-stream` carrying everything that changes, so a client never
+        polls. The stream opens with a `hello` frame and then emits named events; a bare
+        `: ping` comment every twenty seconds keeps intermediaries from closing an idle
+        connection. Listeners are detached when the request closes.
+
+        A client should treat each event as an instruction about what to invalidate, not as a
+        complete replacement for state.
+
+        | Event | Payload | What it means for a client |
+        | --- | --- | --- |
+        | `hello` | `SimState` | Sent once on connect. Place the scrubber and mark the connection live. |
+        | `tick` | `{ now, playing, speed }` | The clock moved. Advance the displayed time only — do not refetch anything. |
+        | `transport` | `SimState` | Play, pause, speed or jump changed. Re-sync the transport controls; after a jump, treat all cached data as stale. |
+        | `decision` | `{ at, screens }` | Decisions were recomputed for the listed screens. Refetch a screen's decision only if it is on view. |
+        | `play` | `{ screenId, campaignId, advertiser, at }` | A new campaign started playing on a screen. Swap the rendered creative and nudge the play counters. |
+        | `scan` | `{ campaignId, screenId, segment }` | A QR code was scanned. Increment scan counters; no redemption has happened yet. |
+        | `redemption` | `Redemption` | An offer was claimed. Refresh revenue, the redemption ledger and the campaign's learned conversion index. |
+        | `incident` | `Incident` | The platform raised something about itself, usually a screen that stopped answering. Prepend it to the incident list and alert if critical. |
+        | `injection` | `{ title, detail, at }` | A reviewer injected a delay, a gate change or a screen outage. Show the notice; every cached decision has just been rebuilt. |
+        | `goodwill` | `GoodwillOffer` | A delay voucher was pushed automatically. Add it to the goodwill ledger. |
+
+        The internal bus also carries `aidx` and `acris` events as feeds publish, but those are
+        not forwarded to the stream; read them through the Feeds endpoints instead.
+      responses:
+        '200':
+          description: An open event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: A sequence of `event:` / `data:` frames separated by blank lines.
+              example: |
+                event: hello
+                data: {"now":1792851000000,"playing":true,"speed":10,"dayStart":1792816200000,"dayEnd":1792886340000,"sceneTime":1792851000000}
+
+                event: tick
+                data: {"now":1792851005000,"playing":true,"speed":10}
+
+                event: play
+                data: {"screenId":"SCR-061","campaignId":"CMP-201","advertiser":"Lumière Parfums","at":1792851005000}
+
+                : ping
+
+components:
+
+  schemas:
+
+    # ---- shared primitives --------------------------------------------------
+
+    Error:
+      type: object
+      description: Every non-2xx body in this API has this shape.
+      required: [error]
+      properties:
+        error:
+          type: string
+          examples: ['not found']
+
+    Timestamp:
+      type: integer
+      format: int64
+      description: Epoch milliseconds on the simulation clock.
+      examples: [1792851000000]
+
+    Share:
+      type: number
+      description: A share of the crowd, 0 to 1.
+      minimum: 0
+      maximum: 1
+      examples: [0.58]
+
+    ShareTuple:
+      type: array
+      description: A `[label, share]` pair, ordered by descending share.
+      prefixItems:
+        - { type: string }
+        - { type: number }
+      minItems: 2
+      maxItems: 2
+      examples: [['English', 0.62]]
+
+    # ---- meta ---------------------------------------------------------------
+
+    Health:
+      type: object
+      required: [ok, day, now]
+      properties:
+        ok: { type: boolean }
+        day:
+          type: string
+          description: The simulated day, ISO date.
+          examples: ['2026-10-24']
+        now: { $ref: '#/components/schemas/Timestamp' }
+
+    AppConfig:
+      type: object
+      description: Everything a client needs before its first render.
+      required: [theme, engine, adapters, segments, categories, airlines, destinations, aiProvider, locales]
+      properties:
+        theme:
+          type: object
+          description: White-label branding. Swapping this object re-skins the product.
+          required: [productName, productTagline, operator, airport, currency, locales, defaultLocale, mark]
+          properties:
+            productName: { type: string, examples: ['AURA'] }
+            productTagline: { type: string, examples: ['Airport Retail Media'] }
+            operator: { type: string, examples: ['Aurelia Airports Authority'] }
+            airport:
+              type: object
+              required: [iata, icao, name, city]
+              properties:
+                iata: { type: string, examples: ['AUR'] }
+                icao: { type: string, examples: ['QXAU'] }
+                name: { type: string, examples: ['Aurelia International Airport'] }
+                city: { type: string, examples: ['Aurelia'] }
+            currency: { $ref: '#/components/schemas/Currency' }
+            locales:
+              type: array
+              items: { type: string }
+              examples: [['en', 'ar']]
+            defaultLocale: { type: string, examples: ['en'] }
+            mark:
+              type: string
+              description: The brand mark as inline SVG, so no external asset is needed.
+        engine:
+          $ref: '#/components/schemas/EngineConfig'
+        adapters:
+          $ref: '#/components/schemas/AdapterConfig'
+        segments:
+          type: array
+          description: The targetable segment catalogue — the contract between the campaign builder and the scorer.
+          items: { $ref: '#/components/schemas/Segment' }
+        categories:
+          type: object
+          description: Outlet categories keyed by id. Categories drive competitor separation and creative templates.
+          additionalProperties:
+            type: object
+            required: [label, tint]
+            properties:
+              label: { type: string, examples: ['Perfume & Cosmetics'] }
+              tint: { type: string, examples: ['#C9739B'] }
+        airlines:
+          type: array
+          items: { $ref: '#/components/schemas/Airline' }
+        destinations:
+          type: array
+          items: { $ref: '#/components/schemas/Destination' }
+        aiProvider:
+          type: string
+          description: Name of the bound creative provider.
+          examples: ['mock-template']
+        locales:
+          type: array
+          items: { type: string }
+          examples: [['en', 'ar']]
+
+    Currency:
+      type: object
+      required: [code, symbol, rate]
+      properties:
+        code: { type: string, examples: ['EUR'] }
+        symbol: { type: string, examples: ['€'] }
+        rate: { type: number, examples: [1] }
+
+    EngineConfig:
+      type: object
+      description: The constants the decision engine runs on, surfaced so every number in the UI can be explained.
+      required:
+        [version, slotSeconds, windowMinutes, triggerBoostWeight, conversionLiftCap,
+         conversionLiftScale, explorationPct, frequencyCapPerHour, competitorSeparation,
+         minCrowd, freshness, catchmentRadius]
+      properties:
+        version: { type: string, examples: ['segment-model v4.2.1'] }
+        slotSeconds:
+          type: integer
+          description: One decision per screen per slot.
+          examples: [15]
+        windowMinutes:
+          type: integer
+          description: Width of the presence and profile window.
+          examples: [5]
+        triggerBoostWeight:
+          type: number
+          description: How much of a trigger's nominal boost is actually applied.
+          examples: [0.33]
+        conversionLiftCap:
+          type: number
+          description: Maximum additive lift a learned conversion index can contribute.
+          examples: [0.1]
+        conversionLiftScale:
+          type: number
+          description: 'lift = (cvrIndex − 1) × scale.'
+          examples: [0.1]
+        explorationPct:
+          type: number
+          description: Share of slots reserved for exploration.
+          examples: [0.05]
+        frequencyCapPerHour:
+          type: integer
+          description: Default plays of the same campaign on the same screen in an hour.
+          examples: [4]
+        competitorSeparation:
+          type: integer
+          description: Slots that must separate two advertisers in the same category on one screen.
+          examples: [2]
+        minCrowd:
+          type: integer
+          description: Global crowd floor. Campaigns set their own above this.
+          examples: [0]
+        freshness:
+          type: object
+          description: Maximum age in seconds before an input is treated as stale by the verifier.
+          required: [aodb, aidx, acris, telemetry]
+          properties:
+            aodb: { type: integer, examples: [900] }
+            aidx: { type: integer, examples: [180] }
+            acris: { type: integer, examples: [300] }
+            telemetry: { type: integer, examples: [120] }
+        catchmentRadius:
+          type: integer
+          description: Metres. Gates beyond this do not feed a screen.
+          examples: [180]
+
+    AdapterConfig:
+      type: object
+      description: >
+        Which implementation is bound to each source. Going live means writing one adapter class
+        and changing one of these values; nothing downstream changes.
+      required: [FLIGHT_SOURCE, ZONE_SOURCE, AODB_SOURCE]
+      properties:
+        FLIGHT_SOURCE:
+          type: string
+          enum: [mock-aidx, vendor-api]
+          examples: [mock-aidx]
+        ZONE_SOURCE:
+          type: string
+          enum: [mock-acris, acris-live]
+          examples: [mock-acris]
+        AODB_SOURCE:
+          type: string
+          enum: [mock-file, vendor-rest]
+          examples: [mock-file]
+
+    Segment:
+      type: object
+      required: [id, label, group, path, base]
+      properties:
+        id: { type: string, examples: [holiday] }
+        label: { type: string, examples: ['Holiday'] }
+        group:
+          type: string
+          description: 'Journey, Purpose, Party, Age, Spend or Region.'
+          examples: [Purpose]
+        path:
+          type: string
+          description: Dotted path read off a `CrowdProfile`.
+          examples: ['purpose.holiday']
+        base:
+          type: number
+          description: Network baseline share, the denominator for audience indexing.
+          examples: [0.34]
+
+    Airline:
+      type: object
+      required: [code, name, type, home, share, premium, colour]
+      properties:
+        code: { type: string, examples: ['XY'] }
+        name: { type: string, examples: ['Aurelia Air'] }
+        type:
+          type: string
+          enum: [full, lowcost, regional, leisure]
+          examples: [full]
+        home: { type: boolean, examples: [true] }
+        share: { type: number, examples: [0.26] }
+        premium: { type: number, examples: [0.22] }
+        colour: { type: string, examples: ['#C8A24B'] }
+
+    Destination:
+      type: object
+      required: [iata, city, country, region, intl, km, leisure, business]
+      properties:
+        iata: { type: string, examples: ['DXB'] }
+        city: { type: string, examples: ['Dubai'] }
+        country: { type: string, examples: ['UAE'] }
+        region:
+          type: string
+          enum: [Domestic, Gulf, Europe, Asia, Africa, Americas]
+          examples: [Gulf]
+        intl: { type: boolean, examples: [true] }
+        km: { type: number, examples: [3400] }
+        leisure: { type: number, examples: [0.46] }
+        business: { type: number, examples: [0.34] }
+        beach:
+          type: boolean
+          description: Present only on beach destinations.
+
+    SimState:
+      type: object
+      description: The transport state of the simulation clock.
+      required: [now, playing, speed, dayStart, dayEnd, sceneTime]
+      properties:
+        now: { $ref: '#/components/schemas/Timestamp' }
+        playing: { type: boolean }
+        speed:
+          type: number
+          description: Simulated milliseconds per real millisecond.
+          examples: [10]
+        dayStart: { $ref: '#/components/schemas/Timestamp' }
+        dayEnd: { $ref: '#/components/schemas/Timestamp' }
+        sceneTime:
+          allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+          description: The worked example's moment, 14:10 at gate 42.
+
+    # ---- canonical domain model ---------------------------------------------
+
+    CrowdProfile:
+      type: object
+      description: >
+        Aggregated shares over a set of flights, weighted by how many of their passengers are
+        present. Nothing in this object describes an individual: there is no identity, no
+        boarding pass, no device and no row that resolves to one person. Every field is a
+        proportion of a crowd, and the crowd is never smaller than the passengers of the flights
+        feeding a zone or a screen within a five-minute window. This type is the enforcement
+        point for that guarantee — if a field cannot be expressed as a share of a crowd, it does
+        not belong in the model.
+      required:
+        [international, domestic, purpose, party, age, age2554, gender, cabin,
+         premiumCabin, frequentFlyer, region, nationalities, languages]
+      properties:
+        international: { $ref: '#/components/schemas/Share' }
+        domestic: { $ref: '#/components/schemas/Share' }
+        purpose:
+          type: object
+          required: [holiday, business, vfr, student, religious]
+          properties:
+            holiday: { $ref: '#/components/schemas/Share' }
+            business: { $ref: '#/components/schemas/Share' }
+            vfr:
+              allOf: [{ $ref: '#/components/schemas/Share' }]
+              description: Visiting friends and relatives.
+            student: { $ref: '#/components/schemas/Share' }
+            religious: { $ref: '#/components/schemas/Share' }
+        party:
+          type: object
+          required: [solo, couple, family, group]
+          properties:
+            solo: { $ref: '#/components/schemas/Share' }
+            couple: { $ref: '#/components/schemas/Share' }
+            family: { $ref: '#/components/schemas/Share' }
+            group: { $ref: '#/components/schemas/Share' }
+        age:
+          type: object
+          required: [u12, a1217, a1824, a2534, a3544, a4554, a55p]
+          properties:
+            u12: { $ref: '#/components/schemas/Share' }
+            a1217: { $ref: '#/components/schemas/Share' }
+            a1824: { $ref: '#/components/schemas/Share' }
+            a2534: { $ref: '#/components/schemas/Share' }
+            a3544: { $ref: '#/components/schemas/Share' }
+            a4554: { $ref: '#/components/schemas/Share' }
+            a55p: { $ref: '#/components/schemas/Share' }
+        age2554:
+          allOf: [{ $ref: '#/components/schemas/Share' }]
+          description: Convenience roll-up of the 25–54 bands, which is a directly targetable segment.
+        gender:
+          type: object
+          required: [f, m]
+          properties:
+            f: { $ref: '#/components/schemas/Share' }
+            m: { $ref: '#/components/schemas/Share' }
+        cabin:
+          type: object
+          required: [economy, premiumEconomy, business]
+          properties:
+            economy: { $ref: '#/components/schemas/Share' }
+            premiumEconomy: { $ref: '#/components/schemas/Share' }
+            business: { $ref: '#/components/schemas/Share' }
+        premiumCabin: { $ref: '#/components/schemas/Share' }
+        frequentFlyer: { $ref: '#/components/schemas/Share' }
+        region:
+          type: object
+          description: Share by destination region, keyed by region name.
+          additionalProperties: { type: number }
+          examples: [{ Gulf: 0.57, Domestic: 0.43 }]
+        nationalities:
+          description: >
+            Shares by nationality. Seeded flight profiles carry an array of `[name, share]`
+            pairs; a blended profile carries an object keyed by name.
+          oneOf:
+            - type: object
+              additionalProperties: { type: number }
+            - type: array
+              items: { $ref: '#/components/schemas/ShareTuple' }
+        languages:
+          description: Shares by language, in the same two forms as `nationalities`.
+          oneOf:
+            - type: object
+              additionalProperties: { type: number }
+            - type: array
+              items: { $ref: '#/components/schemas/ShareTuple' }
+        topNationalities:
+          type: array
+          description: The three largest nationality shares. Present on blended profiles.
+          items: { $ref: '#/components/schemas/ShareTuple' }
+        topLanguages:
+          type: array
+          description: The three largest language shares. Present on blended profiles.
+          items: { $ref: '#/components/schemas/ShareTuple' }
+        topDestinations:
+          type: array
+          description: The four largest destination shares. Present on blended profiles.
+          items: { $ref: '#/components/schemas/ShareTuple' }
+          examples: [[['DXB', 0.57], ['QNV', 0.43]]]
+
+    Flight:
+      type: object
+      description: One flight leg in canonical form, projected from AODB and kept current by AIDX.
+      required:
+        [id, number, airlineCode, direction, origin, destination, terminal, gate, stand,
+         belt, checkin, stdTs, etdTs, atdTs, schedBoardingTs, boardingTs, gateCloseTs,
+         delayMin, delayCode, status, pax, acType, acReg, loadFactor, profile,
+         tobt, tsat, aibt, aobt]
+      properties:
+        id: { type: string, examples: ['XY501'] }
+        number: { type: string, examples: ['501'] }
+        airlineCode: { type: string, examples: ['XY'] }
+        direction:
+          type: string
+          enum: [D, A]
+          description: Only departures build presence.
+          examples: [D]
+        origin: { type: string, examples: ['AUR'] }
+        destination: { type: string, examples: ['DXB'] }
+        terminal: { type: string, examples: ['T2'] }
+        gate: { type: string, examples: ['42'] }
+        stand: { type: string, examples: ['C42'] }
+        zone:
+          type: string
+          description: Zone the current gate sits in.
+          examples: ['T2-PC']
+        belt: { type: [string, 'null'], examples: [null] }
+        checkin: { type: [string, 'null'], examples: ['24-31'] }
+        stdTs:
+          allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+          description: Scheduled time of departure.
+        etdTs:
+          allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+          description: Estimated time of departure, which moves with a delay.
+        atdTs: { type: [integer, 'null'], format: int64, examples: [null] }
+        schedBoardingTs:
+          allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+          description: >
+            Boarding as scheduled. It never moves when a flight is delayed, which is exactly why
+            a delay holds a crowd at the gate instead of dispersing it — passengers arrive for the
+            time on their boarding pass.
+        boardingTs:
+          allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+          description: Actual boarding time, which moves with a delay.
+        gateCloseTs: { $ref: '#/components/schemas/Timestamp' }
+        delayMin: { type: integer, examples: [45] }
+        delayCode:
+          type: [string, 'null']
+          description: IATA delay code.
+          examples: ['93']
+        status:
+          type: string
+          enum: [scheduled, delayed, boarding, final, departed, cancelled, landed]
+          examples: [delayed]
+        pax: { type: integer, examples: [240] }
+        acType: { type: string, examples: ['A333'] }
+        acReg: { type: string, examples: ['QX-KMR'] }
+        loadFactor: { type: number, examples: [0.81] }
+        profile: { $ref: '#/components/schemas/CrowdProfile' }
+        tobt:
+          type: [integer, 'null']
+          format: int64
+          description: A-CDM target off-block time.
+        tsat:
+          type: [integer, 'null']
+          format: int64
+          description: A-CDM target start-up approval time.
+        aibt:
+          type: [integer, 'null']
+          format: int64
+          description: A-CDM actual in-block time.
+        aobt:
+          type: [integer, 'null']
+          format: int64
+          description: A-CDM actual off-block time.
+        scripted:
+          type: boolean
+          description: True for the legs pinned so the worked example reproduces exactly.
+
+    FlightEvent:
+      type: object
+      description: >
+        A canonical flight event. Every consumer sees this shape; `raw` carries the original
+        `IATA_AIDX_FlightLegNotifRQ` message so a claim can be traced back to the wire.
+      required: [id, flightId, kind, at, gate, terminal, etdTs, delayMin, status, pax, source, raw, receivedAt]
+      properties:
+        id: { type: string, examples: ['XY501-delay-1792851000000'] }
+        flightId: { type: string, examples: ['XY501'] }
+        kind:
+          type: string
+          enum: [delay, gate, boarding, final, departed, status]
+          examples: [delay]
+        at: { $ref: '#/components/schemas/Timestamp' }
+        gate: { type: string, examples: ['42'] }
+        terminal: { type: string, examples: ['T2'] }
+        etdTs: { $ref: '#/components/schemas/Timestamp' }
+        delayMin: { type: integer, examples: [45] }
+        status:
+          type: string
+          enum: [scheduled, delayed, boarding, final, departed, cancelled, landed]
+          examples: [delayed]
+        pax: { type: integer, examples: [240] }
+        zone: { type: string, examples: ['T2-PC'] }
+        source:
+          type: string
+          const: AIDX
+        raw:
+          type: string
+          description: The message exactly as it arrived, XML.
+          examples: ['<?xml version="1.0" encoding="UTF-8"?><IATA_AIDX_FlightLegNotifRQ …>']
+        receivedAt: { $ref: '#/components/schemas/Timestamp' }
+
+    Zone:
+      type: object
+      description: >
+        A region of a terminal. `kind` decides how it is fed: a pier draws on its own gates,
+        while landside, control and airside zones draw on the whole terminal, damped and shifted
+        earlier in time.
+      required: [id, terminal, name, kind, x, y, w, h, gates]
+      properties:
+        id: { type: string, examples: ['T2-PC'] }
+        terminal: { type: string, examples: ['T2'] }
+        name: { type: string, examples: ['Pier C (Gates 30–49)'] }
+        kind:
+          type: string
+          enum: [landside, control, airside, pier]
+          examples: [pier]
+        x: { type: number, examples: [470] }
+        y: { type: number, examples: [320] }
+        w: { type: number, examples: [230] }
+        h: { type: number, examples: [192] }
+        gates:
+          type: array
+          description: Gates inside this zone. Empty for zones that own no gates.
+          items: { type: string }
+          examples: [['30', '31', '32']]
+
+    ZonePresence:
+      type: object
+      description: >
+        The derived signal every KPI and every decision rests on. It is modelled from departures
+        at the gates feeding the zone, then corrected by the latest ACRIS queue measurement when
+        that reading is fresh.
+      required: [zoneId, windowStart, windowMinutes, pax, paxNext30, international, dwellMedian, flights, profile, sources]
+      properties:
+        zoneId: { type: string, examples: ['T2-PC'] }
+        windowStart:
+          allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+          description: Start of the window, snapped to the window length.
+        windowMinutes: { type: integer, examples: [5] }
+        pax:
+          type: integer
+          description: People present now, model plus a fresh sensor correction.
+          examples: [412]
+        paxNext30:
+          type: integer
+          description: People expected in thirty minutes.
+          examples: [468]
+        international: { $ref: '#/components/schemas/Share' }
+        dwellMedian:
+          type: integer
+          description: Median remaining dwell in minutes.
+          examples: [52]
+        flights:
+          type: integer
+          description: Departures contributing to this window.
+          examples: [6]
+        profile:
+          oneOf:
+            - { $ref: '#/components/schemas/CrowdProfile' }
+            - { type: 'null' }
+        sources:
+          type: array
+          description: Every input that contributed, with its age.
+          items:
+            type: object
+            required: [source, detail, at]
+            properties:
+              source: { type: string, examples: ['ACRIS'] }
+              detail: { type: string, examples: ['QueueMeasurement peopleCount=412'] }
+              at: { $ref: '#/components/schemas/Timestamp' }
+
+    Gate:
+      type: object
+      required: [id, zone, terminal, intl, x, y, stand]
+      properties:
+        id: { type: string, examples: ['42'] }
+        zone: { type: string, examples: ['T2-PC'] }
+        terminal: { type: string, examples: ['T2'] }
+        intl: { type: boolean, examples: [true] }
+        x: { type: number, examples: [486] }
+        y: { type: number, examples: [442] }
+        stand: { type: string, examples: ['C42'] }
+
+    Screen:
+      type: object
+      description: One display in the estate, with its catchment, its health and its floor price.
+      required:
+        [id, zone, terminal, name, size, orientation, ratio, kind, nearGates, x, y,
+         status, latencyMs, offlineSince, installed, vendor, floorPrice, lastPlay,
+         playsToday, impressionsToday]
+      properties:
+        id: { type: string, examples: ['SCR-061'] }
+        zone: { type: string, examples: ['T2-PC'] }
+        terminal: { type: string, examples: ['T2'] }
+        name: { type: string, examples: ['Gate 42 totem'] }
+        size: { type: string, examples: ['55"'] }
+        orientation:
+          type: string
+          enum: [portrait, landscape]
+          examples: [portrait]
+        ratio:
+          type: string
+          enum: ['9:16', '16:9']
+          examples: ['9:16']
+        kind: { type: string, examples: ['Gate totem'] }
+        nearGates:
+          type: array
+          description: The gates whose crowd this screen faces. This is what it may be sold against.
+          items: { type: string }
+          examples: [['40', '41', '42', '43', '44']]
+        x: { type: number, examples: [486] }
+        y: { type: number, examples: [442] }
+        status:
+          type: string
+          enum: [online, degraded, offline]
+          examples: [online]
+        latencyMs: { type: integer, examples: [62] }
+        offlineSince: { type: [integer, 'null'], format: int64, examples: [null] }
+        installed: { type: string, examples: ['2025-04-14'] }
+        vendor: { type: string, examples: ['Lumen Displays'] }
+        floorPrice:
+          type: number
+          description: Base slot price before footfall scaling.
+          examples: [11]
+        lastPlay: { type: [integer, 'null'], format: int64 }
+        playsToday: { type: integer, examples: [184] }
+        impressionsToday: { type: integer, examples: [21460] }
+
+    Outlet:
+      type: object
+      required: [id, name, category, zone, terminal, nearGates, unit, sqm, opens, closes, contact, monthlyRent]
+      properties:
+        id: { type: string, examples: ['OUT-001'] }
+        name: { type: string, examples: ['Lumière Parfums'] }
+        category: { type: string, examples: [perfume] }
+        zone: { type: string, examples: ['T2-DF'] }
+        terminal: { type: string, examples: ['T2'] }
+        nearGates:
+          type: array
+          items: { type: string }
+          examples: [['40', '41', '42', '43', '44', '45', '46']]
+        unit: { type: string, examples: ['C-100'] }
+        sqm: { type: integer, examples: [148] }
+        opens: { type: string, examples: ['05:00'] }
+        closes: { type: string, examples: ['23:30'] }
+        contact: { type: string, examples: ['lumi.re.parfums@tenants.aur'] }
+        monthlyRent: { type: integer, examples: [31000] }
+
+    Vendor:
+      type: object
+      required: [id, name, type, contact, sla, screens]
+      properties:
+        id: { type: string, examples: ['VND-01'] }
+        name: { type: string, examples: ['Lumen Displays'] }
+        type: { type: string, examples: ['Screen hardware'] }
+        contact: { type: string, examples: ['ops@lumen.example'] }
+        sla: { type: string, examples: ['4h on-site'] }
+        screens:
+          type: integer
+          description: Screens in the estate supplied by this vendor.
+          examples: [61]
+
+    # ---- campaigns, creatives, promotions ------------------------------------
+
+    HardFilters:
+      type: object
+      description: >
+        Conditions that must all hold before a campaign is even scored. They are re-evaluated by
+        the verifier on the winner, so a campaign cannot slip through on a stale evaluation.
+      properties:
+        zones:
+          type: array
+          description: Zones the campaign is placed in. Empty or absent means no zone restriction.
+          items: { type: string }
+          examples: [['T2-DF', 'T2-PC']]
+        screens:
+          type: array
+          description: Specific screens the campaign is placed on.
+          items: { type: string }
+        internationalOnly:
+          type: boolean
+          description: Requires the crowd to be at least half international.
+          examples: [true]
+        domesticOnly:
+          type: boolean
+          description: Requires the crowd to be at least half domestic.
+        region:
+          type: string
+          description: Requires this destination region to exceed a quarter of the crowd.
+          examples: [Gulf]
+        minCrowd:
+          type: integer
+          description: Minimum people present in front of the screen.
+          examples: [100]
+        minDwell:
+          type: integer
+          description: Minimum median remaining dwell, in minutes.
+          examples: [15]
+        hours:
+          type: array
+          description: '`[fromHour, toHour]` in UTC, half-open.'
+          prefixItems:
+            - { type: integer }
+            - { type: integer }
+          minItems: 2
+          maxItems: 2
+          examples: [[5, 10]]
+        stockPaused:
+          type: boolean
+          description: Set by the outlet when it has run out. Filters the campaign out entirely.
+
+    Trigger:
+      type: object
+      description: >
+        An operational condition that lifts a campaign's score when it fires. Only a fraction of
+        the nominal boost is applied, set by `triggerBoostWeight`.
+      required: [type, boost, label]
+      properties:
+        type:
+          type: string
+          enum: [delay, gateChange, boarding, festival]
+          examples: [delay]
+        overMin:
+          type: integer
+          description: For a delay trigger, the threshold in minutes.
+          examples: [30]
+        boost:
+          type: number
+          description: Nominal multiplier when the trigger fires.
+          examples: [1.5]
+        label:
+          type: string
+          examples: ['Flight delayed > 30 min']
+
+    Campaign:
+      type: object
+      required:
+        [id, name, advertiser, outletId, category, weights, hard, triggers, budget, spent,
+         cpm, cvrIndex, creative, promo, priority, schedule, status, approval, brandSafety,
+         frequencyCap, pinned]
+      properties:
+        id: { type: string, examples: ['CMP-201'] }
+        name: { type: string, examples: ['15% off signature fragrances'] }
+        advertiser: { type: string, examples: ['Lumière Parfums'] }
+        outletId: { type: [string, 'null'], examples: ['OUT-001'] }
+        airlineCode:
+          type: string
+          description: Set on airline campaigns, which take priority inside their own boarding window.
+          examples: ['XY']
+        category: { type: string, examples: [perfume] }
+        weights:
+          type: object
+          description: Targeting weights by segment id, each 0 to 1. Scoring is a noisy-OR over these.
+          additionalProperties: { type: number }
+          examples: [{ international: 0.5, holiday: 0.7, age2554: 0.53 }]
+        hard: { $ref: '#/components/schemas/HardFilters' }
+        triggers:
+          type: array
+          items: { $ref: '#/components/schemas/Trigger' }
+        budget: { type: number, examples: [18000] }
+        spent: { type: number, examples: [7420] }
+        cpm: { type: number, examples: [9.4] }
+        cvrIndex:
+          type: number
+          description: >
+            Learned from measured scans and redemptions. It is the only part of the model that
+            moves on its own, and it feeds the lift term in the next decision.
+          examples: [1.3]
+        creative: { type: [string, 'null'], examples: ['CRE-201'] }
+        promo: { type: [string, 'null'], examples: ['PRM-201'] }
+        priority:
+          type: integer
+          description: Lower sorts first when the rule-based fallback picks a default.
+          examples: [1]
+        schedule:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, examples: ['06:00'] }
+            to: { type: string, examples: ['23:00'] }
+        status:
+          type: string
+          enum: [live, paused, pending, draft]
+          examples: [live]
+        approval:
+          type: string
+          enum: [pending, approved, rejected]
+          examples: [approved]
+        brandSafety:
+          type: string
+          enum: [passed, failed]
+          examples: [passed]
+        frequencyCap:
+          type: integer
+          description: Plays of this campaign on one screen per hour.
+          examples: [4]
+        pinned:
+          type: boolean
+          description: A manual pin from the media manager forces the score to 1.
+          examples: [false]
+        pinReason: { type: string, examples: ['Sponsorship commitment'] }
+        pinnedScreens:
+          type: [array, 'null']
+          description: Restricts a pin to specific screens. Null pins everywhere the campaign is placed.
+          items: { type: string }
+        coBrand: { type: string }
+
+    Creative:
+      type: object
+      required: [id, campaignId, advertiser, category, template, headline, sub, cta, ratio, approval, generatedBy, updated, checks]
+      properties:
+        id: { type: string, examples: ['CRE-201'] }
+        campaignId: { type: [string, 'null'], examples: ['CMP-201'] }
+        advertiser: { type: string, examples: ['Lumière Parfums'] }
+        category: { type: string, examples: [perfume] }
+        template:
+          type: string
+          enum: [bold-offer, lifestyle-split, countdown-deal, minimal-type, gate-native]
+          examples: [bold-offer]
+        headline:
+          type: object
+          description: Headline keyed by locale.
+          additionalProperties: { type: string }
+          examples: [{ en: '15% off signature fragrances', ar: 'خصم 15٪ على العطور' }]
+        sub:
+          type: object
+          description: Sub-headline keyed by locale.
+          additionalProperties: { type: string }
+        cta:
+          type: object
+          description: Call to action keyed by locale.
+          additionalProperties: { type: string }
+          examples: [{ en: 'Scan to claim', ar: 'امسح للحصول' }]
+        ratio: { type: string, examples: ['9:16'] }
+        approval:
+          type: string
+          enum: [pending, approved, rejected]
+          examples: [approved]
+        generatedBy:
+          type: string
+          description: Which provider produced it.
+          examples: [studio]
+        brief:
+          type: string
+          description: Present on generated creatives.
+        updated: { type: string, examples: ['2026-10-24'] }
+        checks:
+          type: object
+          description: Brand-safety checklist. The verifier requires an approved creative, not merely a passing checklist.
+          required: [brandSafety, legibility, duration, languages]
+          properties:
+            brandSafety: { type: boolean }
+            legibility: { type: boolean }
+            duration: { type: boolean }
+            languages: { type: boolean }
+
+    PromoCode:
+      type: object
+      required: [id, campaignId, advertiser, outletId, code, offer, validUntil, maxRedemptions, redemptions, shareEnabled, stockPaused, terms]
+      properties:
+        id: { type: string, examples: ['PRM-201'] }
+        campaignId: { type: string, examples: ['CMP-201'] }
+        advertiser: { type: string, examples: ['Lumière Parfums'] }
+        outletId: { type: [string, 'null'], examples: ['OUT-001'] }
+        code: { type: string, examples: ['AUR201-59'] }
+        offer: { type: string, examples: ['15% off signature fragrances'] }
+        validUntil:
+          type: string
+          description: Expiry. `boarding` means the code dies when the linked flight closes boarding.
+          examples: [boarding]
+        maxRedemptions: { type: integer, examples: [640] }
+        redemptions: { type: integer, examples: [212] }
+        shareEnabled:
+          type: boolean
+          description: Whether claiming also returns a second code for a travel companion.
+          examples: [true]
+        stockPaused: { type: boolean, examples: [false] }
+        terms:
+          type: string
+          examples: ['One per traveller. Valid airside at Lumière Parfums until the linked flight closes boarding.']
+
+    PromoDetail:
+      type: object
+      description: An offer resolved for a landing page, with the campaign and creative behind it.
+      required: [promo, campaign, creative]
+      properties:
+        promo: { $ref: '#/components/schemas/PromoCode' }
+        campaign:
+          oneOf:
+            - { $ref: '#/components/schemas/Campaign' }
+            - { type: 'null' }
+        creative:
+          oneOf:
+            - { $ref: '#/components/schemas/Creative' }
+            - { type: 'null' }
+
+    Redemption:
+      type: object
+      description: >
+        One claimed offer. `id` is assigned when the row is persisted and is absent from the
+        in-memory ledger the API serves.
+      required: [at, campaignId, screenId, advertiser, outletId, value, segment, code, via]
+      properties:
+        id: { type: string }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        campaignId: { type: string, examples: ['CMP-201'] }
+        screenId: { type: [string, 'null'], examples: ['SCR-061'] }
+        advertiser: { type: string, examples: ['Lumière Parfums'] }
+        outletId: { type: [string, 'null'], examples: ['OUT-001'] }
+        value:
+          type: number
+          description: Till value attributed to the claim, in the configured currency.
+          examples: [28.4]
+        segment: { type: string, examples: [holiday] }
+        code: { type: string, examples: ['AUR201-59'] }
+        via: { type: string, examples: [qr] }
+
+    ClaimResult:
+      type: object
+      required: [redemption, shareCode]
+      properties:
+        redemption:
+          oneOf:
+            - { $ref: '#/components/schemas/Redemption' }
+            - { type: 'null' }
+        shareCode:
+          type: [string, 'null']
+          description: A second code for someone travelling with the claimant. Null when sharing is off.
+          examples: ['AUR201-100']
+
+    # ---- decisions ----------------------------------------------------------
+
+    ScoreTerm:
+      type: object
+      description: One targeted segment's contribution to a campaign's match.
+      required: [segId, label, weight, share, reach, index]
+      properties:
+        segId: { type: string, examples: [holiday] }
+        label: { type: string, examples: ['Holiday'] }
+        weight:
+          type: number
+          description: How much the campaign asked for this segment, 0 to 1.
+          examples: [0.7]
+        share:
+          type: number
+          description: How much of this crowd is in the segment.
+          examples: [0.58]
+        reach:
+          type: number
+          description: weight × share.
+          examples: [0.406]
+        index:
+          type: [number, 'null']
+          description: Share divided by the network baseline. Above 1 means this crowd over-indexes.
+          examples: [1.71]
+
+    CampaignScore:
+      type: object
+      description: >
+        The arithmetic for one campaign against one crowd, kept in full so the number can be
+        read back rather than taken on trust.
+      required: [campaignId, terms, coverage, match, lift, boost, boostMultiplier, final, firedTriggers, formula]
+      properties:
+        campaignId: { type: string, examples: ['CMP-201'] }
+        terms:
+          type: array
+          items: { $ref: '#/components/schemas/ScoreTerm' }
+        coverage:
+          type: number
+          description: Noisy-OR over the targeted segments — the share of the crowd the campaign reaches.
+          examples: [0.71]
+        match:
+          type: number
+          description: Coverage scaled by confidence, which drops when inputs are old.
+          examples: [0.71]
+        lift:
+          type: number
+          description: Additive lift from the learned conversion index, capped.
+          examples: [0.03]
+        boost:
+          type: number
+          description: Nominal boost of the strongest trigger that fired.
+          examples: [1.5]
+        boostMultiplier:
+          type: number
+          description: The fraction of that boost actually applied.
+          examples: [1.165]
+        final:
+          type: number
+          description: '(match + lift) × boostMultiplier.'
+          examples: [0.86]
+        firedTriggers:
+          type: array
+          items: { $ref: '#/components/schemas/Trigger' }
+        formula:
+          type: string
+          description: The same calculation written out, for display next to the score.
+          examples: ['(71.0% + 0.030) × 1.165 = 0.86']
+        adjusted:
+          type: number
+          description: The score after business rules. This is what the ranking sorts on.
+          examples: [0.86]
+        excluded:
+          type: string
+          description: Present when a business rule removed the campaign from contention.
+          examples: ['Frequency cap: played 4× this hour']
+        pinned:
+          type: boolean
+          description: True when a manual pin forced the score.
+        rules:
+          type: array
+          description: Every business rule that touched this score, with its effect and its reason.
+          items:
+            type: object
+            required: [rule, effect, why]
+            properties:
+              rule: { type: string, examples: ['Budget pacing'] }
+              effect: { type: string, examples: ['×0.85'] }
+              why: { type: string, examples: ['Spend is ahead of pace (52% of budget at 34% of day)'] }
+
+    EvidenceItem:
+      type: object
+      description: >
+        One input a decision cites. Each has a source, the reference it points at and the moment
+        it was observed, so the verifier can age it against that source's freshness budget.
+      required: [source, sourceKey, ref, at, detail]
+      properties:
+        source: { type: string, examples: ['AODB/AIDX'] }
+        sourceKey:
+          type: string
+          description: Key into the engine's freshness budgets.
+          enum: [aodb, aidx, acris, telemetry]
+          examples: [aidx]
+        ref: { type: string, examples: ['XY501'] }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        detail:
+          type: string
+          examples: ['XY501 → DXB · gate 42 · 240 pax · delayed 45 min · boards 15:00']
+
+    VerificationCheck:
+      type: object
+      description: One deterministic check the proposed winner had to survive.
+      required: [name, pass, detail]
+      properties:
+        name:
+          type: string
+          examples: ['Score reproduces from logged inputs']
+        pass: { type: boolean, examples: [true] }
+        detail: { type: string, examples: ['recomputed 0.86'] }
+
+    Decision:
+      type: object
+      description: >
+        What one screen plays in one slot and the complete reasoning behind it: the crowd, every
+        campaign that was excluded and why, every campaign that was scored and how, the business
+        rules that moved the ranking, the winner, the verifier's checks and the evidence. When
+        verification fails the engine falls back to a rule-based default and says so.
+      required: [screenId, at, empty, winner, candidates, filtered, fallback, verification, evidence]
+      properties:
+        id:
+          type: string
+          description: Screen identifier and the slot timestamp.
+          examples: ['SCR-061@1792851000000']
+        screenId: { type: string, examples: ['SCR-061'] }
+        screenName: { type: string, examples: ['Gate 42 totem'] }
+        zone: { type: string, examples: ['T2-PC'] }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        empty:
+          type: boolean
+          description: True when no flight is inside this screen's catchment window, in which case nothing else is computed.
+          examples: [false]
+        crowdNow: { type: integer, examples: [389] }
+        crowdNext30: { type: integer, examples: [402] }
+        dwellMedian: { type: integer, examples: [52] }
+        maxDelay:
+          type: integer
+          description: Largest delay among the flights in catchment. This is what a delay trigger tests.
+          examples: [45]
+        profile:
+          oneOf:
+            - { $ref: '#/components/schemas/CrowdProfile' }
+            - { type: 'null' }
+        parts:
+          type: array
+          description: The flights in catchment, with how much each contributed.
+          items:
+            type: object
+            required: [id, dest, gate, pax, delay, t, weight, present]
+            properties:
+              id: { type: string, examples: ['XY501'] }
+              dest: { type: string, examples: ['DXB'] }
+              gate: { type: string, examples: ['42'] }
+              pax: { type: integer, examples: [240] }
+              delay: { type: integer, examples: [45] }
+              t:
+                type: integer
+                description: Minutes until actual boarding. Negative means boarding has begun.
+                examples: [50]
+              weight:
+                type: number
+                description: Catchment weight, 0 to 1.
+                examples: [1]
+              present:
+                type: integer
+                description: Estimated passengers of this flight present now.
+                examples: [226]
+        winner:
+          oneOf:
+            - { $ref: '#/components/schemas/CampaignScore' }
+            - { type: 'null' }
+        winnerCampaign:
+          oneOf:
+            - { $ref: '#/components/schemas/Campaign' }
+            - { type: 'null' }
+        rule:
+          type: string
+          description: The one-line reason this campaign won, in the language the UI shows.
+          examples: ['Flight delayed > 30 min → ×1.5 boost']
+        candidates:
+          type: array
+          description: The top scored campaigns, best first.
+          items: { $ref: '#/components/schemas/CampaignScore' }
+        filtered:
+          type: array
+          description: >
+            Campaigns excluded by the hard filters, each with the reasons and the score it would
+            have had. Keeping the counterfactual is what makes the log auditable.
+          items:
+            type: object
+            required: [campaignId, name, advertiser, reasons]
+            properties:
+              campaignId: { type: string, examples: ['CMP-203'] }
+              name: { type: string, examples: ['Lounge day pass — €39'] }
+              advertiser: { type: string, examples: ['Skyhaven Lounge'] }
+              reasons:
+                type: array
+                items: { type: string }
+                examples: [['Not placed in T2-PC']]
+              match: { type: number, examples: [0.18] }
+              final: { type: number, examples: [0.21] }
+              terms:
+                type: array
+                items: { $ref: '#/components/schemas/ScoreTerm' }
+        fallback:
+          type: boolean
+          description: True when verification failed or nothing passed the hard rules.
+          examples: [false]
+        fallbackReason: { type: [string, 'null'] }
+        reason:
+          type: string
+          description: Set on an empty decision, explaining why nothing was computed.
+          examples: ['No flight is within the catchment window for this screen']
+        verification:
+          type: object
+          description: The deterministic gate between a proposed ad and a screen.
+          required: [checks, ok]
+          properties:
+            checks:
+              type: array
+              items: { $ref: '#/components/schemas/VerificationCheck' }
+            ok: { type: boolean, examples: [true] }
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/EvidenceItem' }
+        confidence:
+          type: number
+          description: Drops below 1 when the oldest cited input is more than ten minutes old, which scales every match down.
+          examples: [1]
+        modelVersion: { type: string, examples: ['segment-model v4.2.1'] }
+
+    # ---- metrics ------------------------------------------------------------
+
+    NetworkMetrics:
+      type: object
+      required: [screens, plays, impressions, revenue, scans, redemptions, activeCampaigns, perf, currency]
+      properties:
+        screens:
+          type: object
+          required: [total, online, degraded, offline, onlinePct, avgLatency]
+          properties:
+            total: { type: integer, examples: [178] }
+            online: { type: integer, examples: [174] }
+            degraded: { type: integer, examples: [3] }
+            offline: { type: integer, examples: [1] }
+            onlinePct: { type: number, examples: [0.9775] }
+            avgLatency:
+              type: integer
+              description: Mean latency in milliseconds across screens that are not offline.
+              examples: [71]
+        plays: { type: integer, examples: [16420] }
+        impressions: { type: integer, examples: [361240] }
+        revenue: { type: number, examples: [3284.16] }
+        scans: { type: integer, examples: [1204] }
+        redemptions: { type: integer, examples: [746] }
+        activeCampaigns:
+          type: integer
+          description: Campaigns that are live and still have budget.
+          examples: [19]
+        perf:
+          type: object
+          description: The platform's own service figures.
+          required: [apiP95, playlistMs, uptime7d]
+          properties:
+            apiP95: { type: number, examples: [86] }
+            playlistMs: { type: number, examples: [31] }
+            uptime7d: { type: number, examples: [99.94] }
+        currency: { $ref: '#/components/schemas/Currency' }
+
+    OutletMetrics:
+      type: object
+      required: [impressions, scans, redemptions, revenue]
+      properties:
+        impressions: { type: integer, examples: [48210] }
+        scans: { type: integer, examples: [184] }
+        redemptions: { type: integer, examples: [112] }
+        revenue: { type: number, examples: [2620.8] }
+
+    CampaignMetrics:
+      type: object
+      description: Today's running counters next to the persisted daily history.
+      required: [live, history]
+      properties:
+        live:
+          type: object
+          required: [plays, impressions, scans, redemptions, revenue, segments]
+          properties:
+            plays: { type: integer, examples: [742] }
+            impressions: { type: integer, examples: [16340] }
+            scans: { type: integer, examples: [62] }
+            redemptions: { type: integer, examples: [38] }
+            revenue: { type: number, examples: [153.6] }
+            segments:
+              type: object
+              description: Observed index by segment label.
+              additionalProperties: { type: number }
+              examples: [{ holiday: 1.21, family: 2.04, business: 0.88 }]
+        history:
+          type: array
+          items: { $ref: '#/components/schemas/CampaignDay' }
+
+    CampaignDay:
+      type: object
+      description: One campaign's totals for one past day.
+      required: [date, campaignId, advertiser, impressions, scans, redemptions, spend, revenue, plays]
+      properties:
+        id:
+          type: integer
+          description: Present on rows read back from storage.
+        date: { type: string, examples: ['2026-10-17'] }
+        campaignId: { type: string, examples: ['CMP-201'] }
+        advertiser: { type: string, examples: ['Lumière Parfums'] }
+        impressions: { type: integer, examples: [38420] }
+        scans: { type: integer, examples: [146] }
+        redemptions: { type: integer, examples: [91] }
+        spend: { type: number, examples: [361.1] }
+        revenue: { type: number, examples: [2129.4] }
+        plays: { type: integer, examples: [1746] }
+
+    GoodwillOffer:
+      type: object
+      description: A voucher pushed automatically when a departure passed an hour late.
+      required: [id, flightId, airline, airlineCode, gate, delayMin, pax, at, voucher, partner, coFund, cost, status]
+      properties:
+        id: { type: string, examples: ['GW-001'] }
+        flightId: { type: string, examples: ['XY501'] }
+        airline: { type: string, examples: ['Aurelia Air'] }
+        airlineCode: { type: string, examples: ['XY'] }
+        gate: { type: string, examples: ['42'] }
+        delayMin: { type: integer, examples: [75] }
+        pax: { type: integer, examples: [240] }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        voucher: { type: string, examples: ['Meal voucher €12'] }
+        partner:
+          type: string
+          description: The retail outlet absorbing the offer.
+          examples: ['Brew & Bloom Coffee']
+        coFund:
+          type: string
+          description: How the cost is split between the airline and the partner.
+          examples: ['50 / 50']
+        cost: { type: number, examples: [624] }
+        status: { type: string, examples: ['auto-pushed'] }
+
+    Incident:
+      type: object
+      description: Something the platform raised about itself, routed to an owner.
+      required: [id, at, severity, kind, ref, title, detail, owner, status]
+      properties:
+        id: { type: string, examples: ['INC-0101'] }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        severity:
+          type: string
+          enum: [critical, major, minor]
+          examples: [critical]
+        kind: { type: string, examples: ['screen-offline'] }
+        ref:
+          type: string
+          description: What the incident is about, usually a screen identifier.
+          examples: ['SCR-061']
+        title: { type: string, examples: ['Gate 42 totem offline > 5 min'] }
+        detail:
+          type: string
+          examples: ['No heartbeat since 14:02. Inventory released back to the pool.']
+        owner: { type: string, examples: ['Field Tech · T2'] }
+        status: { type: string, examples: [open] }
+
+    # ---- inventory and yield ------------------------------------------------
+
+    InventorySlot:
+      type: object
+      required: [hour, premium, pax, state, price]
+      properties:
+        hour:
+          type: integer
+          description: Hour of the day, 5 to 22.
+          examples: [14]
+        premium:
+          type: boolean
+          description: True when predicted presence exceeds 260, which raises the booked rate.
+          examples: [true]
+        pax:
+          type: integer
+          description: Predicted presence in the zone for that hour.
+          examples: [412]
+        state:
+          type: string
+          enum: [booked, available]
+          examples: [booked]
+        price:
+          type: number
+          description: Floor price scaled by predicted footfall, capped at 2.4×.
+          examples: [16.5]
+
+    InventoryGrid:
+      type: object
+      description: A screen-by-hour slot grid for one zone.
+      required: [zone, hours, rows]
+      properties:
+        zone: { type: string, examples: ['T2-PC'] }
+        hours:
+          type: array
+          items: { type: integer }
+          examples: [[5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]]
+        rows:
+          type: array
+          description: One row per screen, at most twenty-four.
+          items:
+            type: object
+            required: [screen, slots]
+            properties:
+              screen: { $ref: '#/components/schemas/Screen' }
+              slots:
+                type: array
+                items: { $ref: '#/components/schemas/InventorySlot' }
+
+    YieldForecast:
+      type: object
+      required: [zones, forecast]
+      properties:
+        zones:
+          type: array
+          description: Predicted presence through the day for every zone.
+          items:
+            type: object
+            required: [zone, name, hours]
+            properties:
+              zone: { type: string, examples: ['T2-PC'] }
+              name: { type: string, examples: ['Pier C (Gates 30–49)'] }
+              hours:
+                type: array
+                items:
+                  type: object
+                  required: [hour, pax]
+                  properties:
+                    hour: { type: integer, examples: [14] }
+                    pax: { type: integer, examples: [412] }
+        forecast:
+          type: array
+          description: Seven days of occupancy and revenue outlook, with the weekend uplift applied.
+          items:
+            type: object
+            required: [date, day, occupancy, revenue]
+            properties:
+              date: { type: string, examples: ['2026-10-24'] }
+              day: { type: string, examples: [Sat] }
+              occupancy: { type: number, examples: [0.66] }
+              revenue: { type: number, examples: [7240.52] }
+
+    # ---- feeds --------------------------------------------------------------
+
+    FeedHealth:
+      type: object
+      description: One external standard, the adapter bound to it, and how healthy it looks.
+      required: [standard, adapter, messages, lastAt, rate, freshnessBudgetSec, entities]
+      properties:
+        standard:
+          type: string
+          description: The wire standard this feed speaks.
+          examples: ['IATA_AIDX_FlightLegNotifRQ v16.1']
+        adapter:
+          type: string
+          description: The adapter implementation currently bound.
+          examples: [mock-aidx]
+        messages:
+          type: integer
+          description: Messages produced so far today.
+          examples: [1842]
+        lastAt:
+          type: [integer, 'null']
+          format: int64
+          description: When the last message arrived. Null before the first one.
+          examples: [1792850998000]
+        rate:
+          type: integer
+          description: Messages per minute since the start of the day.
+          examples: [3]
+        freshnessBudgetSec:
+          type: integer
+          description: Age beyond which the verifier treats inputs from this feed as stale.
+          examples: [180]
+        entities:
+          type: array
+          description: The canonical entities this feed produces.
+          items: { type: string }
+          examples: [['FlightEvent']]
+
+    FeedsHealth:
+      type: object
+      required: [aodb, aidx, acris]
+      properties:
+        aodb:
+          allOf: [{ $ref: '#/components/schemas/FeedHealth' }]
+          description: 'AODB flight movements, 33 columns. Produces Flight, GateAssignment and AircraftType.'
+        aidx:
+          allOf: [{ $ref: '#/components/schemas/FeedHealth' }]
+          description: IATA AIDX flight leg notifications. Produces FlightEvent.
+        acris:
+          allOf: [{ $ref: '#/components/schemas/FeedHealth' }]
+          description: 'ACI ACRIS / FIWARE NGSI-LD. Produces Terminal, Zone, Checkpoint and QueueMeasurement.'
+
+    QueueMeasurement:
+      type: object
+      description: The canonical form of an ACRIS queue reading, as the engine consumes it.
+      required: [zoneId, people, waitSec, at]
+      properties:
+        zoneId: { type: string, examples: ['T2-PC'] }
+        people: { type: integer, examples: [412] }
+        waitSec: { type: integer, examples: [180] }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        raw:
+          description: The NGSI-LD entity the reading was projected from.
+
+    NgsiLdEntity:
+      type: object
+      description: >
+        An ACI ACRIS / FIWARE Smart Data Model entity in NGSI-LD form. Properties are objects
+        with a `type` and a `value`; relationships point at another entity's URN.
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          examples: ['urn:ngsi-ld:Zone:AUR:T2-PC']
+        type:
+          type: string
+          enum: [Terminal, Zone, Checkpoint, QueueMeasurement]
+          examples: [Zone]
+        '@context':
+          type: array
+          items: { type: string }
+      additionalProperties: true

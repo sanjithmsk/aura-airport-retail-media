@@ -1,0 +1,1 @@
+ALTER TABLE `campaigns` ADD `daily_cap` real;

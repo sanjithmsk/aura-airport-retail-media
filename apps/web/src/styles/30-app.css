@@ -1,0 +1,35 @@
+/* The few rules the React port adds on top of the design system: the claim
+   page needs a scrolling body outside the shell, and the shell's own body
+   rule sets overflow:hidden for everyone. */
+
+.claimpage {
+  min-height: 100%;
+  background: var(--bg);
+  overflow-y: auto;
+  padding: 18px max(16px, env(safe-area-inset-left, 0px)) 48px;
+}
+body:has(.claimpage) { overflow: auto; }
+
+.claimwrap .panel { box-shadow: var(--shadow); }
+
+/* The campaign builder's weight sliders sit in a grid that must not
+   overflow its panel at 1440px. */
+.segrow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 112px 36px; gap: 8px; align-items: center; }
+.segrow label { font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.segrow input[type="range"] { width: 100%; }
+
+/* Creative tiles in the library grid keep a usable minimum height. */
+.creativetile { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.creativetile .adprev { aspect-ratio: 16 / 9; }
+
+/* A full-width ghost button used as the "generate" tile. */
+.tilebtn { min-height: 140px; border-style: dashed; justify-content: center; }
+
+/* At 1920px the canvas keeps its 1680px measure from .wrap; at 1440px the
+   grid helpers already collapse. Only the inventory grid needs a floor. */
+.invgrid { min-width: 620px; }
+
+@media (max-width: 520px) {
+  .claimpage { padding-inline: 14px; }
+  .bigcode { font-size: 22px; }
+}
