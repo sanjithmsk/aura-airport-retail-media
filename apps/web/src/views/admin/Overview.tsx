@@ -12,7 +12,7 @@ import {
   useCampaigns, useDecision, useDecisions, useIncidentMutation, useIncidents,
   useInvalidateAfterInjection, useNetworkMetrics, useScreens, useSim, useZones
 } from '../../lib/queries';
-import { TerminalMap } from '../../components/TerminalMap';
+import { TerminalMap, DensityKey } from '../../components/TerminalMap';
 import {
   Chip, DataTable, ErrorNote, Grid, Kpi, Kpis, KvRow, Loading, Note, PageHead,
   Pad, Panel, Row, ScreenStatusChip, Sparkline, Stack, dayCurve, type Column
@@ -47,7 +47,7 @@ export function AdminOverview(): JSX.Element {
     <Stack>
       <PageHead
         title="Operator console"
-        lead={`Network health, revenue and the state of every screen at ${airportName}. The heat overlay and every KPI are computed from the same ZonePresence signal the ad engine uses.`}
+        lead={`Network health, revenue and the state of every screen at ${airportName}. The density on the plan and every figure above come from the same ZonePresence signal the ad engine decides on.`}
       />
 
       <Kpis>
@@ -89,7 +89,7 @@ export function AdminOverview(): JSX.Element {
       </Kpis>
 
       <Panel
-        title={`Live network · ${airportName}`}
+        title={`Live network at ${airportName}`}
         right={
           <div className="row tight">
             <Chip tone="ok" dot>online</Chip>
@@ -112,9 +112,8 @@ export function AdminOverview(): JSX.Element {
             )}
           </div>
           <div className="maplegend">
-            <span>
-              Heat overlay = ZonePresence, passengers estimated in each zone for the current 5-minute window
-            </span>
+            <DensityKey />
+            <span className="muted">estimated per zone for the current 5-minute window</span>
             <div className="spacer" />
             {pickedScreen ? (
               <span className="mono">

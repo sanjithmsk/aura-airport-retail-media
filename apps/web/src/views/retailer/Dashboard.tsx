@@ -48,12 +48,22 @@ export function RetailerDashboard(): JSX.Element {
   const cvr = scope.totals.scans ? scope.totals.redemptions / scope.totals.scans : 0;
   const hoursIn = Math.max(1, ((sim.data?.now ?? now) - (sim.data?.dayStart ?? now)) / 3_600_000);
 
+  // The bar is the share of targeting weight this segment carries across the
+  // retailer's live campaigns; the figure beside it is the conversion index
+  // those same campaigns record, weighted the same way. Both move per segment
+  // — an average taken over every campaign would print one number four times.
   const segPerf = ['family', 'holiday', 'business', 'couple']
     .map((k) => ({
+      key: k,
       seg: SEGMAP[k]?.label ?? k,
-      index: averageCvrIndex(scope.campaigns)
+      weight: segmentWeight(scope.campaigns, k),
+      index: segmentCvrIndex(scope.campaigns, k)
     }))
-    .sort((a, b) => b.index - a.index);
+    .sort((a, b) => b.weight - a.weight || b.index - a.index);
+  const segWeightTotal = Math.max(
+    0.0001,
+    segPerf.reduce((t, x) => t + x.weight, 0)
+  );
 
   return (
     <Stack>
@@ -140,16 +150,18 @@ export function RetailerDashboard(): JSX.Element {
                   <BarRow
                     key={s.seg}
                     label={s.seg}
-                    value={Math.min(1, s.index / 3.4)}
-                    tone={s.index > 1.6 ? 'ok' : 'muted'}
-                    index={`${s.index.toFixed(1)}×`}
+                    value={s.weight / segWeightTotal}
+                    tone={s.index > 1.15 ? 'ok' : 'muted'}
+                    index={`${s.index.toFixed(2)}×`}
                   />
                 ))}
               </Bars>
               <Note style={{ marginTop: '8px' }}>
-                {segPerf[0]
-                  ? `${segPerf[0].seg} redeem ${segPerf[0].index.toFixed(1)}× the network average. Raising that weight would push more of your slots at family-heavy gates.`
-                  : 'No measured conversion yet.'}
+                {segPerf[0] && segPerf[0].weight > 0
+                  ? `${segPerf[0].seg} carries the most weight in your live campaigns, and converts at ` +
+                    `${segPerf[0].index.toFixed(2)}× the network average. Raising a segment's weight sends ` +
+                    `more of your slots to the gates where it shows up.`
+                  : 'No segment is weighted yet. Set weights in the campaign builder to steer where your slots land.'}
               </Note>
             </Pad>
           </Panel>
@@ -239,9 +251,25 @@ export function RetailerDashboard(): JSX.Element {
   );
 }
 
-function averageCvrIndex(campaigns: Campaign[]): number {
-  if (!campaigns.length) return 1;
-  return campaigns.reduce((s, c) => s + (c.cvrIndex || 1), 0) / campaigns.length;
+/** How much of this retailer's targeting weight sits on one segment. */
+function segmentWeight(campaigns: Campaign[], seg: string): number {
+  return campaigns.reduce((t, c) => t + (c.weights?.[seg] ?? 0), 0);
+}
+
+/** Conversion index for one segment: the campaigns that target it, weighted
+ *  by how hard they target it. Returns 1 — the network average — when the
+ *  segment carries no weight, which is the honest answer rather than a
+ *  borrowed figure from campaigns that never aimed at it. */
+function segmentCvrIndex(campaigns: Campaign[], seg: string): number {
+  let num = 0;
+  let den = 0;
+  for (const c of campaigns) {
+    const w = c.weights?.[seg] ?? 0;
+    if (w <= 0) continue;
+    num += (c.cvrIndex || 1) * w;
+    den += w;
+  }
+  return den > 0 ? num / den : 1;
 }
 
 function campaignCols(

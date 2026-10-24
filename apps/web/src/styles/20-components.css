@@ -14,7 +14,7 @@
 .brandmark .mk2 { stroke: var(--accent-ink); stroke-width: 1.6; opacity: .55; }
 [data-surface="light"] .brandmark .mk2 { stroke: #fff; opacity: .9; }
 .brand b { font-size: 17px; letter-spacing: .06em; font-weight: 700; }
-.brand small { display: block; color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; margin-top: -2px; }
+.brand small { display: block; color: var(--muted); font-size: var(--t-micro); margin-top: -2px; }
 
 .roles { display: flex; gap: 2px; background: var(--bg-2); padding: 3px; border-radius: var(--r); border: 1px solid var(--line-soft); overflow-x: auto; }
 .roles button {
@@ -28,7 +28,7 @@
 
 .simclock { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; }
 .simclock .t { font-family: var(--board); font-size: 25px; font-weight: 700; color: var(--accent); letter-spacing: .02em; font-variant-numeric: tabular-nums; }
-.simclock .d { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; }
+.simclock .d { font-size: var(--t-micro); color: var(--muted); }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 1.6s infinite; }
 .pulse.off { background: var(--muted); animation: none; }
 @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .28 } }
@@ -42,7 +42,7 @@
   background: var(--bg-2); border-bottom: 1px solid var(--line); flex: 0 0 auto;
 }
 .transport .grp { display: flex; align-items: center; gap: 4px; }
-.transport .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin-inline-end: 2px; }
+.transport .lbl { font-size: var(--t-micro); color: var(--muted); margin-inline-end: 3px; }
 
 .btn {
   border: 1px solid var(--line); background: var(--panel); color: var(--fg-2);
@@ -89,8 +89,8 @@ textarea.input { width: 100%; resize: vertical; font-family: inherit; }
 .wrap { max-width: 1680px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 
 .pagehead { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
-.pagehead h2 { font-size: 20px; }
-.pagehead p { color: var(--muted); font-size: 12.5px; margin: 2px 0 0; max-width: 72ch; }
+.pagehead h2 { font-size: var(--t-display); font-weight: 600; letter-spacing: -.022em; line-height: 1.1; }
+.pagehead p { color: var(--muted); font-size: var(--t-sub); margin: 5px 0 0; max-width: 68ch; }
 
 /* ── Panels ─────────────────────────────────────────────────────────── */
 .panel {
@@ -101,7 +101,7 @@ textarea.input { width: 100%; resize: vertical; font-family: inherit; }
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 11px 14px; border-bottom: 1px solid var(--line-soft);
 }
-.panel > header h3 { font-size: 13.5px; }
+.panel > header h3 { font-size: var(--t-sub); font-weight: 600; letter-spacing: -.008em; }
 .panel > header .cap { margin: 0; }
 .panel .pad { padding: 14px; }
 .panel .pad.tight { padding: 10px 14px; }
@@ -115,17 +115,32 @@ textarea.input { width: 100%; resize: vertical; font-family: inherit; }
 @media (max-width: 1100px) { .g3, .g4, .g23, .g32 { grid-template-columns: minmax(0,1fr); } }
 @media (max-width: 760px) { .g2 { grid-template-columns: minmax(0,1fr); } }
 
-/* ── KPI strip ──────────────────────────────────────────────────────── */
-.kpis { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; }
+/* ── KPI: one instrument, divided by hairlines ──────────────────────────
+   Six separate cards read as six widgets competing for attention. Ruled
+   cells in a single frame read as one instrument panel, which is what a
+   row of airport figures actually is. The 1px grid gap draws the rules,
+   so they stay correct when the grid reflows to two or three columns. */
+.kpis {
+  display: grid; grid-template-columns: repeat(6, minmax(0,1fr));
+  gap: 1px; background: var(--line-soft);
+  border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+}
 @media (max-width: 1280px) { .kpis { grid-template-columns: repeat(3, minmax(0,1fr)); } }
 @media (max-width: 620px) { .kpis { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; min-width: 0; }
-.kpi .k { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); font-weight: 600; }
-.kpi .v { font-family: var(--board); font-size: 27px; font-weight: 700; line-height: 1.15; margin-top: 3px; font-variant-numeric: tabular-nums; }
-.kpi .s { font-size: 11.5px; color: var(--fg-2); display: flex; align-items: center; gap: 5px 4px; flex-wrap: wrap; }
+.kpi {
+  background: var(--panel); padding: 13px 15px 14px; min-width: 0;
+  display: flex; flex-direction: column;
+}
+/* Figure first, name beneath: the number is what a reader scans for. */
+.kpi .v {
+  order: 1; font-family: var(--board); font-size: var(--t-figure); font-weight: 700;
+  line-height: 1.04; letter-spacing: -.018em; font-variant-numeric: tabular-nums;
+}
+.kpi .k { order: 2; font-size: var(--t-micro); color: var(--muted); font-weight: 500; margin-top: 3px; }
+.kpi .s { order: 3; font-size: var(--t-small); color: var(--fg-2); display: flex; align-items: center; gap: 5px 4px; flex-wrap: wrap; margin-top: 7px; }
 .kpi .v.ok { color: var(--ok); } .kpi .v.warn { color: var(--warn); } .kpi .v.crit { color: var(--crit); }
 .kpi .v.amber { color: var(--accent); }
-.spark { display: block; width: 100%; height: 26px; margin-top: 4px; }
+.spark { order: 4; display: block; width: 100%; height: 24px; margin-top: auto; padding-top: 8px; }
 
 /* ── Chips, badges, pills ───────────────────────────────────────────── */
 .chip {
@@ -147,8 +162,8 @@ textarea.input { width: 100%; resize: vertical; font-family: inherit; }
 .tablewrap { overflow-x: auto; }
 table.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.t th {
-  text-align: start; font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--line);
+  text-align: start; font-size: var(--t-micro); color: var(--muted); font-weight: 600;
+  padding: 8px 10px; border-bottom: 1px solid var(--line);
   position: sticky; top: 0; background: var(--panel); z-index: 1;
 }
 table.t td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
@@ -171,14 +186,33 @@ table.t tr.sel { background: color-mix(in srgb, var(--accent) 10%, transparent);
 /* ── Map ────────────────────────────────────────────────────────────── */
 .mapwrap { position: relative; background: var(--bg-2); border-radius: var(--r); overflow: hidden; border: 1px solid var(--line); }
 .mapwrap svg { display: block; width: 100%; height: auto; max-width: 100%; }
+
 .zoneShape { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
-.zoneLabel { fill: var(--muted); font-size: 9.5px; font-family: var(--ui); letter-spacing: .06em; text-transform: uppercase; }
+.zoneHatch { pointer-events: none; }
+/* A stroke drawn behind the glyphs keeps names readable over dense hatch
+   without putting a box on the plan. */
+.zoneLabel, .zonePax { paint-order: stroke fill; stroke: var(--panel); stroke-width: 3.5px; stroke-linejoin: round; }
+.zoneLabel { fill: var(--fg); font-family: var(--board); font-size: 11.5px; font-weight: 600; letter-spacing: .005em; }
+.zonePax { fill: var(--fg-2); font-family: var(--mono); font-size: 9.5px; }
+.termLabel { fill: var(--muted); font-family: var(--board); font-size: 11.5px; letter-spacing: .02em; }
+.transferLink { stroke: var(--line); stroke-width: 9; stroke-linecap: round; fill: none; }
 .pierShape { fill: var(--panel-2); stroke: var(--line); }
-.scr { stroke-width: 0; cursor: pointer; }
-.scr.online { fill: var(--ok); } .scr.degraded { fill: var(--warn); } .scr.offline { fill: var(--crit); }
-.scr.pick { stroke: var(--accent); stroke-width: 2.5; }
-.heatcell { pointer-events: none; }
-.maplegend { display: flex; gap: 14px; flex-wrap: wrap; padding: 9px 14px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--fg-2); }
+
+/* Screens are ticks, the way stands are marked on an apron chart. */
+.scr rect { stroke-width: 0; cursor: pointer; }
+/* Working screens are drawn quietly; faults are the thing worth finding. */
+.scr.online rect { fill: color-mix(in srgb, var(--ok) 52%, var(--muted)); opacity: .62; }
+.scr.degraded rect { fill: var(--warn); }
+.scr.offline rect { fill: var(--crit); }
+.scr:hover rect, .scr.pick rect { opacity: 1; }
+.scr:hover rect { fill: var(--accent); }
+.scr.pick rect { fill: var(--accent); }
+.scr .halo { fill: none; stroke: var(--accent); stroke-width: 1.4; opacity: .85; }
+
+.maplegend { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; padding: 9px 14px; border-top: 1px solid var(--line-soft); font-size: var(--t-small); color: var(--fg-2); }
+.dkey { display: flex; align-items: center; gap: 9px; }
+.dkey-ramp { display: block; }
+.dkey-cell { fill: var(--panel); stroke: var(--line-soft); stroke-width: 1; }
 
 /* ── Passenger screen ───────────────────────────────────────────────── */
 .screenstage { display: flex; justify-content: center; padding: 6px 0 2px; }
@@ -246,7 +280,7 @@ table.t tr.sel { background: color-mix(in srgb, var(--accent) 10%, transparent);
 .row.tight { gap: 6px; }
 .between { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.field > label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.field > label { font-size: var(--t-micro); color: var(--muted); font-weight: 500; }
 .note { font-size: 11.5px; color: var(--muted); }
 .xml { font-family: var(--mono); font-size: 10.5px; line-height: 1.5; white-space: pre; overflow-x: auto; background: var(--bg-2); border: 1px solid var(--line-soft); border-radius: var(--r-s); padding: 10px; color: var(--fg-2); max-height: 280px; overflow-y: auto; }
 .toast {
@@ -289,6 +323,10 @@ table.t tr.sel { background: color-mix(in srgb, var(--accent) 10%, transparent);
 
 @media (max-width: 880px) {
   body { overflow: auto; }
+  /* The column no longer owns the viewport height, so the page itself
+     scrolls and the canvas grows to its content. */
+  #app { height: auto; min-height: 100%; }
+  .canvas { overflow-y: visible; }
   .rail {
     position: static; flex: 0 0 auto; width: 100%; flex-direction: row; overflow-x: auto;
     padding-block: 8px;

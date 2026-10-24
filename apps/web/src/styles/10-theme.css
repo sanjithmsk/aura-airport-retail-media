@@ -1,104 +1,142 @@
 /* ─────────────────────────────────────────────────────────────────────────
-   Layout concept: a product shell — fixed brand/role header, a simulation
-   transport bar under it, a left rail of role sub-pages, and one scrolling
-   canvas. Admin and the passenger screen run the dark control-room surface;
-   the commercial roles run the light one. Both palettes are explicit.
+   Design language: an airport operations chart, not a SaaS dashboard.
+   The references are the apron diagram and the departure board — line work
+   on a dark field, tight small labels, tabular figures, one amber accent.
+   Density is drawn as hatch, never as a tinted block, so the plan stays
+   legible at every crowd level and the whole map lives in one hue. Colour
+   is therefore spent almost entirely on status, which is what must be seen
+   across a room.
+
+   Admin and the passenger screen run the dark control-room surface; the
+   commercial roles run the light one. Both palettes are explicit.
    ───────────────────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
 
-  /* Colour — control room (default surface) */
-  --bg:        #0B1016;
-  --bg-2:      #0E151D;
-  --panel:     #121B25;
-  --panel-2:   #18232F;
-  --line:      #22303E;
-  --line-soft: #1A2531;
-  --fg:        #E4EDF5;
-  --fg-2:      #A9BCCE;
-  --muted:     #7A8DA0;
-  --accent:    #F0A830;   /* departure-board amber */
-  --accent-ink:#1A1206;
-  --ok:        #39BD7E;
-  --warn:      #E07A3C;
-  --crit:      #E04F4F;
-  --info:      #7AA7D9;
-  --heat-1:    #1C3246;
-  --heat-2:    #2E5A6B;
-  --heat-3:    #C98A3C;
-  --heat-4:    #E05F3C;
-  --shadow:    0 1px 2px rgba(0,0,0,.45), 0 8px 28px rgba(0,0,0,.30);
-  --inset:     inset 0 1px 0 rgba(255,255,255,.035);
+  /* Field — deeper than before so hatch and hairlines read */
+  --bg:        #070B0F;
+  --bg-2:      #0A1016;
+  --panel:     #0D131A;
+  --panel-2:   #131C25;
+  --line:      #1C2733;
+  --line-soft: #151E28;
 
-  /* Type */
+  /* Ink */
+  --fg:        #E2EBF3;
+  --fg-2:      #96A9BB;
+  --muted:     #67798B;
+
+  /* One accent: the departure board */
+  --accent:    #F2A93B;
+  --accent-ink:#171104;
+
+  /* Status is the only other hue on the field */
+  --ok:        #3FBE84;
+  --warn:      #E8833F;
+  --crit:      #E2514F;
+  --info:      #78A6D8;
+
+  /* Density: one amber ramp by alpha, not four competing hues.
+     Kept as tokens so the light surface can restate them. */
+  --d-1: rgba(242,169,59,.10);
+  --d-2: rgba(242,169,59,.22);
+  --d-3: rgba(242,169,59,.40);
+  --d-4: rgba(242,169,59,.62);
+  --d-ink: #F2A93B;
+
+  --shadow:    0 1px 2px rgba(0,0,0,.5), 0 10px 34px rgba(0,0,0,.34);
+  --inset:     inset 0 1px 0 rgba(255,255,255,.03);
+
+  /* Type — one grotesque in two widths, plus mono for codes only */
   --ui:    'Archivo', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --board: 'Archivo Narrow', 'Archivo', ui-sans-serif, system-ui, sans-serif;
   --mono:  'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --ar:    'IBM Plex Sans Arabic', 'Noto Sans Arabic', var(--ui);
 
-  /* Space */
-  --r:   10px;
-  --r-s: 6px;
-  --gut: 16px;
+  /* Scale */
+  --t-display: 30px;
+  --t-figure:  26px;
+  --t-head:    17px;
+  --t-sub:     13.5px;
+  --t-body:    13px;
+  --t-small:   11.5px;
+  --t-micro:   10.5px;
+
+  --r:   8px;
+  --r-s: 5px;
+  --gut: 18px;
 }
 
 /* Light surface for the commercial roles */
 [data-surface="light"] {
   color-scheme: light;
-  --bg:        #EFF3F5;
-  --bg-2:      #E7EDF1;
+  --bg:        #F1F4F6;
+  --bg-2:      #E8EEF2;
   --panel:     #FFFFFF;
-  --panel-2:   #F5F8FA;
-  --line:      #D5DEE5;
-  --line-soft: #E4EBF0;
-  --fg:        #0F1821;
-  --fg-2:      #3D4D5C;
-  --muted:     #64788A;
-  --accent:    #B9761A;
+  --panel-2:   #F4F8FA;
+  --line:      #D3DDE4;
+  --line-soft: #E5ECF0;
+  --fg:        #0D151D;
+  --fg-2:      #3A4A58;
+  --muted:     #627484;
+  --accent:    #A86410;
   --accent-ink:#FFFFFF;
-  --ok:        #1F8A5B;
-  --warn:      #B35A1E;
-  --crit:      #BE3B3B;
-  --info:      #2F6CA6;
-  --heat-1:    #DCE7EE;
-  --heat-2:    #9FC2CE;
-  --heat-3:    #E6BE7E;
-  --heat-4:    #DC7C58;
-  --shadow:    0 1px 2px rgba(16,30,45,.07), 0 6px 20px rgba(16,30,45,.07);
+  --ok:        #1C8257;
+  --warn:      #A9531B;
+  --crit:      #B53838;
+  --info:      #2C6599;
+  --d-1: rgba(168,100,16,.08);
+  --d-2: rgba(168,100,16,.18);
+  --d-3: rgba(168,100,16,.34);
+  --d-4: rgba(168,100,16,.54);
+  --d-ink: #A86410;
+  --shadow:    0 1px 2px rgba(16,30,45,.06), 0 6px 18px rgba(16,30,45,.06);
   --inset:     inset 0 1px 0 rgba(255,255,255,.6);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html, body { height: 100%; }
+/* The shell is a fixed-height column with one scrolling canvas inside it.
+   #root needs an explicit height or the percentage chain breaks, the shell
+   grows past the viewport and body's overflow:hidden silently clips every
+   page below the fold. */
+html, body, #root { height: 100%; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--ui);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: var(--t-body);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 body[dir="rtl"] { font-family: var(--ar); }
 
-h1, h2, h3, h4 { margin: 0; text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
+h1, h2, h3, h4 { margin: 0; text-wrap: balance; font-weight: 600; letter-spacing: -0.012em; }
 p { margin: 0 0 .7em; }
 a { color: var(--info); }
 button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-.num { font-variant-numeric: tabular-nums; }
-.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.board { font-family: var(--board); letter-spacing: .01em; }
+.num, .tnum { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.board { font-family: var(--board); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
 .fg2 { color: var(--fg-2); }
-.cap { text-transform: uppercase; letter-spacing: .09em; font-size: 10.5px; font-weight: 600; color: var(--muted); }
-.tnum { font-variant-numeric: tabular-nums; }
+
+/* Labels are sentence case and quiet. Small type earns attention by being
+   near the thing it names, not by shouting in capitals. */
+.cap {
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: .005em;
+  color: var(--muted);
+}
 .nowrap { white-space: nowrap; }
 .right { text-align: right; }
 .hide { display: none !important; }
