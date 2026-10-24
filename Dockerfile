@@ -1,6 +1,6 @@
 # One image: build the workspace, then run the API, which also serves the
 # built client. `docker compose up` is the whole product on one port.
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim@sha256:1e17e9ba99e12faaef8c45e77c97bbf92c38f8bbfc0e3c2eacfbf5e0f63db893 AS build
 WORKDIR /app
 
 # better-sqlite3 needs a toolchain only if no prebuild matches this platform
@@ -16,7 +16,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim@sha256:1e17e9ba99e12faaef8c45e77c97bbf92c38f8bbfc0e3c2eacfbf5e0f63db893 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/aura.db
@@ -31,9 +31,14 @@ COPY --from=build /app/apps/api/drizzle ./apps/api/drizzle
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 
-RUN mkdir -p /data
+RUN mkdir -p /data \    && chown -R node:node /app /data
+
+USER node
+
 VOLUME /data
 EXPOSE 4000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3   CMD node -e "require('http').get('http://localhost:4000/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 # The server runs migrations and generates the seeded day when the database
 # is empty, so a fresh container needs nothing else. One command, no external

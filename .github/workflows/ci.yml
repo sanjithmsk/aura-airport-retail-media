@@ -5,15 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     # Pinned, not ubuntu-latest: that label migrates to Ubuntu 26 from
     # 19 October 2026, and a demo repo should not change underneath itself.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@64ed1c7edfaf4efac29fbe2a0c62ec78a60edf41  # v4.0.2
         with:
           node-version: 22
           cache: npm
@@ -45,7 +48,7 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
       - name: Build the image
         run: docker build -t aura-airport-retail-media:ci .
       - name: Start it and wait for health

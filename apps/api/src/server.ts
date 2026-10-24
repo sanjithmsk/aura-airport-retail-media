@@ -31,7 +31,13 @@ app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body,
 });
 
 async function main() {
-  await app.register(cors, { origin: true });
+  /* CORS: in production, allow the Render deployment and localhost for dev.
+     In any environment, never reflect arbitrary origins. */
+  const corsOrigin = process.env.NODE_ENV === 'production'
+    ? /\.onrender\.com$|^https?:\/\/localhost/
+    : /^https?:\/\/localhost/;
+  
+  await app.register(cors, { origin: corsOrigin });
   await registerRoutes(app);
 
   // In production the API also serves the built client, so one container and
