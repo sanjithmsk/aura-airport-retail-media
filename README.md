@@ -87,6 +87,23 @@ npm run build && npm start      # everything on :4000
 | `npm run audit` | Run the challenge criteria as executable checks (see below) |
 | `npm -w @aura/api run db:generate` | Generate a new SQL migration after a schema change |
 
+### Deploying it
+
+`render.yaml` is a Render Blueprint: in the Render dashboard, **New → Blueprint**,
+pick this repo, and it builds the Dockerfile and runs the one container.
+
+There is nothing else to provision. The day is generated from a fixed seed at
+boot, so the service needs no database add-on and no persistent disk — if the
+filesystem resets, the next boot rebuilds the same airport, down to the Gate 42
+worked example. The same property makes the app portable to Fly, Railway, Cloud
+Run or a plain VM: one image, one port, no external state.
+
+Two things to know before demoing from a free instance. It spins down after
+15 minutes without traffic and takes about a minute to wake, so open the URL a
+few minutes beforehand. And Render may restart a free instance at any time,
+which resets the simulation clock to 14:05 — harmless between runs, awkward
+mid-demo. A paid instance removes both.
+
 ---
 
 ## The demo in fifteen minutes

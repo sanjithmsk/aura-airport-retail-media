@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { THEME, hhmm } from '@aura/core';
 import { loadWorld, runMigrations, sqlite } from './db.js';
+import { seedDatabase } from './seed-world.js';
 import { store } from './store.js';
 import { initSim, sim, stop } from './sim.js';
 import { registerRoutes } from './routes.js';
@@ -46,9 +47,13 @@ async function main() {
   }
 
   runMigrations();
+  // Hosts with an ephemeral filesystem (Render, Fly, a fresh container) start
+  // every boot with no database. The day is generated from a fixed seed, so
+  // rebuilding it here is deterministic and takes about a second — far better
+  // than refusing to start and leaving a demo URL dead.
   if (!store.flightCount()) {
-    app.log.error('The database is empty. Run `npm run db:seed` first.');
-    process.exit(1);
+    app.log.info('no database found — generating the seeded day…');
+    seedDatabase({ force: true });
   }
 
   app.log.info('loading the day from SQLite…');

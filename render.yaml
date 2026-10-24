@@ -1,0 +1,47 @@
+# Render Blueprint — one web service, no database to provision.
+#
+# The image builds the workspace and runs the API, which also serves the built
+# client, so the whole product is one container on one port. The seeded day is
+# generated from a fixed seed at boot, which is why no persistent disk is
+# needed: every restart rebuilds the same airport.
+#
+#   Render dashboard → New → Blueprint → pick this repo.
+#
+# Note on the free plan: the instance spins down after 15 minutes without
+# traffic and takes about a minute to wake. Open the URL a few minutes before
+# a demo, or move to a paid instance to remove the cold start entirely.
+services:
+  - type: web
+    name: aura-airport-retail-media
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PORT
+        value: 4000
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+
+      # Writable scratch inside the container. The day is regenerated on every
+      # boot, so nothing of value is lost when the filesystem resets.
+      - key: DATABASE_URL
+        value: file:/data/aura.db
+
+      # Data sources. Each one is a single value: swap a mock for a live feed
+      # without touching the application core. See docs/adapters.md.
+      - key: FLIGHT_SOURCE
+        value: mock-aidx
+      - key: ZONE_SOURCE
+        value: mock-acris
+      - key: AODB_SOURCE
+        value: mock-file
+
+      # The creative assistant runs offline by default, so the demo never
+      # depends on an external API being reachable or a key being set.
+      - key: AI_PROVIDER
+        value: mock
