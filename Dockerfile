@@ -35,6 +35,7 @@ RUN mkdir -p /data
 VOLUME /data
 EXPOSE 4000
 
-# Seed on first boot (the seed is idempotent: it clears and regenerates),
-# then serve. One command, no external services.
-CMD ["sh", "-c", "node apps/api/dist/seed.js && node apps/api/dist/server.js"]
+# The server runs migrations and generates the seeded day when the database
+# is empty, so a fresh container needs nothing else. One command, no external
+# services, and the same start path the hosted deploy uses.
+CMD ["node", "apps/api/dist/server.js"]

@@ -1,38 +1,48 @@
-# Render Blueprint — one web service, no database to provision.
+# Render Blueprint — one web service, nothing else to provision.
 #
-# The image builds the workspace and runs the API, which also serves the built
-# client, so the whole product is one container on one port. The seeded day is
-# generated from a fixed seed at boot, which is why no persistent disk is
-# needed: every restart rebuilds the same airport.
+#   Render dashboard → New → Blueprint → pick this repo → Deploy.
 #
-#   Render dashboard → New → Blueprint → pick this repo.
+# The API serves the built client, so the whole product is one service on one
+# port. The day is generated from a fixed seed when the database is empty, so
+# there is no database add-on and no persistent disk: if the filesystem resets,
+# the next boot rebuilds the same airport, Gate 42 worked example and all.
 #
-# Note on the free plan: the instance spins down after 15 minutes without
-# traffic and takes about a minute to wake. Open the URL a few minutes before
-# a demo, or move to a paid instance to remove the cold start entirely.
+# These two commands are the ones verified from a clean checkout, which is why
+# this uses Render's Node runtime rather than the Dockerfile. The Dockerfile is
+# still there and still works the same way if you prefer `runtime: docker`.
+#
+# On the free plan the instance spins down after 15 minutes without traffic and
+# takes about a minute to wake, and Render may restart it at any time, which
+# resets the simulation clock to 14:05. Open the URL a few minutes before a
+# demo, or use a paid instance to remove both.
 services:
   - type: web
     name: aura-airport-retail-media
-    runtime: docker
+    runtime: node
     plan: free
     region: oregon
-    dockerfilePath: ./Dockerfile
+
+    # --include=dev is deliberate: NODE_ENV=production below would otherwise
+    # skip TypeScript and Vite, which the build needs.
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm -w @aura/api run start
+
     healthCheckPath: /api/health
     autoDeployTrigger: commit
+
     envVars:
-      - key: PORT
-        value: 4000
+      - key: NODE_VERSION
+        value: "22"
       - key: NODE_ENV
         value: production
       - key: LOG_LEVEL
         value: info
 
-      # Writable scratch inside the container. The day is regenerated on every
-      # boot, so nothing of value is lost when the filesystem resets.
-      - key: DATABASE_URL
-        value: file:/data/aura.db
+      # PORT is intentionally absent: Render injects it and the server reads it.
+      # DATABASE_URL is intentionally absent: it defaults to a file beside the
+      # API, which is writable, and the day is regenerated on every boot.
 
-      # Data sources. Each one is a single value: swap a mock for a live feed
+      # Data sources. Each is a single value: swap a mock for a live feed
       # without touching the application core. See docs/adapters.md.
       - key: FLIGHT_SOURCE
         value: mock-aidx
